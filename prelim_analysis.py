@@ -52,7 +52,7 @@ na_count = d.isna().sum()
 na_cols = na_count[na_count>0].index
 for c in na_cols:
     d[c] = fill_na(d[c])
-# check dtype, set puma to int
+# check dtype, set puma to str
 #print(d.dtypes)
 d['residence_puma'] = pd.Series(d['residence_puma'], dtype='str')
 
@@ -88,9 +88,10 @@ cols_sup_act = ['drugtests_other_positive', 'drugtests_meth_positive', 'avg_days
                 'program_attendances', 'drugtests_thc_positive', 'delinquency_reports',
                 'drugtests_cocaine_positive', 'violations_instruction', 'violations_movewithoutpermission',
                 'percent_days_employed', 'employment_exempt', 'violations_electronicmonitoring']
-# for d (one hot encoding versoin)
+# for d (one hot encoding version)
 cols_X = [x for x in d.columns if x not in ['id']+ cols_ys]
-cols_X1 = [x for x in d.columns if x not in ['id'] + cols_ys + cols_sup_act] # remove sup act cols for year 1 features
+cols_X1 = [x for x in d.columns if (x not in ['id'] + cols_ys) and
+           (x.split('_')[:-1] not in cols_sup_act)] # remove sup act cols for year 1 features
 # for dc (cat col version), convert cat cols to integers so readable by lgb
 # exceptions: puma (keep orig codes)
 # TODO: keep a mapping between cats and codes

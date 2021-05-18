@@ -1,6 +1,6 @@
 ##################################
 # NIJ Recidivism Challenge
-# Denoise Autoencoder
+# Denoise Autoencoder - Example with image data
 # chris zhang 5/17/2021
 ##################################
 
@@ -183,7 +183,7 @@ input_img = Input(shape = (x, y, inChannel))
 
 autoencoder = Model(input_img, autoencoder(input_img))
 autoencoder.compile(loss='mean_squared_error', optimizer = 'rmsprop')
-# Train model - DA
+# Train model - DA (note x_train_noisy and train_X are same shape)
 autoencoder_train = autoencoder.fit(x_train_noisy, train_X, batch_size=batch_size,epochs=epochs,verbose=1,validation_data=(x_valid_noisy, valid_X))
 
 # Training vs Validation Loss Plot - DA
@@ -198,7 +198,7 @@ plt.legend()
 plt.show()
 
 # Prediction and plot - DA
-pred = autoencoder.predict(x_test_noisy)
+pred = autoencoder.predict(x_test_noisy) # ideally will predict image without noise so readable as a test_label
 plt.figure(figsize=(20, 4))
 print("Test Images")
 for i in range(10,20,1):

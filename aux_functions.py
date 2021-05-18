@@ -7,6 +7,19 @@ import pandas as pd
 import random
 from sklearn.preprocessing import OneHotEncoder
 
+# a function to read and clean up raw data
+def read_and_clean_raw(fp):
+    df = pd.read_csv(fp)
+    # Rename varnames, set all varname to lower
+    dct_rename = {
+        '_v1': 'Prior_Arrest_Episodes_PPViolationCharges',
+        '_v2': 'Prior_Conviction_Episodes_PPViolationCharges',
+        '_v3': 'Prior_Conviction_Episodes_DomesticViolenceCharges',
+        '_v4': 'Prior_Conviction_Episodes_GunCharges',
+    }
+    df = df.rename(columns=dct_rename)
+    df.columns = [x.lower() for x in df.columns]
+    return df
 # a function to fill in NAs using random draw from valid values in column
 def fill_na(col):
     # col: a df column, pdSeries
