@@ -3,9 +3,11 @@
 # Denoise Autoencoder - Implementation with NIJ data
 # chris zhang 5/18/2021
 #
-# TODO: check DA loss graph on denoising x_train_noisy <- this validates perf of denoising to same dim
-# ^ loss graph not good (valid loss diverge up as train loss go down)
+# TODO [done]: check DA loss graph on denoising x_train_noisy <- noise factor=0.01 works for NIJ data
+# ^noise factor=0.02 divegence occurs, 0.1, 0.5 bad
+# TODO [done]: add constant xvars so #cols = 4X, 8X allowing encoding/decoding flexibility to lower dim
 # TODO: set noise a la Beaulieu-Jones 2016: randomly set to 0 for 20% values of input matrix
+# TODO: Year 1 results with 128>>64 xvars and 0.02 noise get similar/worse perf vs ML. Try 32 xvars, random 0 as noise
 ##################################
 
 import os
@@ -26,6 +28,11 @@ pd.set_option('max_colwidth', 100)
 pd.set_option('display.max_columns', 999)
 pd.set_option('display.width', 200)
 from aux_functions import *
+
+from sklearn.model_selection import cross_val_score
+import xgboost
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 # Read in data
 # d will be purely train data (no id, no yvars)
@@ -75,8 +82,12 @@ d = d.drop(columns=list(cat_cols) + two_class_cols)
 del d['id']
 
 # drop some xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
-del d['prior_arrest_episodes_property_1']
-del d['prior_arrest_episodes_property_2']
+# del d['prior_arrest_episodes_property_1']
+# del d['prior_arrest_episodes_property_2']
+
+# add constant xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
+for i in range(6):
+    d['z_%s' % i] = 1
 
 # Reshape train data
 d = np.array(d)
@@ -111,9 +122,31 @@ def autoencoder(input_img):
     conv4 = Conv1D(128, (3), activation='relu', padding='same')(conv3) # k/4 x 1 x 128
     up1 = UpSampling1D(2)(conv4) # k/2 x 1 x 128
     conv5 = Conv1D(64, (3), activation='relu', padding='same')(up1) # k/2 x 1 x 64
-    up2 = UpSampling1D(2)(conv5) # 28 x 28 x 64
+    up2 = UpSampling1D(2)(conv5) # k x 1 x 64
     decoded = Conv1D(1, (3,), activation='sigmoid', padding='same')(up2) # k x 1 x 1
     return decoded
+
+# def autoencoder(input_img):
+#     # Note - k should be dividable by pool_size multiple times, as set by conv structure
+#     #encoder
+#     #input = k x 1 (wide and thin)
+#     conv1 = Conv1D(32, (3), activation='relu', padding='same')(input_img) # k x 1 x 32
+#     pool1 = MaxPooling1D(pool_size=2)(conv1) # k/2 x 1 x 32
+#     conv2 = Conv1D(64, (3), activation='relu', padding='same')(pool1) # k/2 x 1 x 64
+#     pool2 = MaxPooling1D(pool_size=2)(conv2) # k/4 x 1 x 64
+#     conv3 = Conv1D(128, (3), activation='relu', padding='same')(pool2) # k/4 x 1 x 128
+#     pool3 = MaxPooling1D(pool_size=2)(conv3) # k/8 x 1 x 128
+#     conv4 = Conv1D(256, (3), activation='relu', padding='same')(pool3) # k/8 x 1 x 256
+#     pool4 = MaxPooling1D(pool_size=2)(conv4) # k/16 x 1 x 256
+#     conv5 = Conv1D(512, (3), activation='relu', padding='same')(pool4) # k/16 x 1 x 512
+#
+#     #decoder
+#     conv6 = Conv1D(512, (3), activation='relu', padding='same')(conv5) # k/16 x 1 x 512
+#     up1 = UpSampling1D(2)(conv6) # k/8 x 1 x 512
+#     conv7 = Conv1D(256, (3), activation='relu', padding='same')(up1) # k/8 x 1 x 256
+#     up2 = UpSampling1D(2)(conv7) # k/4 x 1 x 64
+#     decoded = Conv1D(1, (3,), activation='sigmoid', padding='same')(up2) # k/4 x 1 x 1
+#     return decoded
 
 autoencoder = Model(input_img, autoencoder(input_img))
 autoencoder.compile(loss='mean_squared_error', optimizer = 'rmsprop')
@@ -139,7 +172,7 @@ pred = autoencoder.predict(train_X)
 print(pred - train_ground) # should see small errors
 
 # Add noise to train/valid data
-noise_factor = 0.5
+noise_factor = 0.02 # 0.5 on NIJ data would cause valid loss diverging up, 0.01 is good for convergence
 x_train_noisy = train_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=train_X.shape)
 x_valid_noisy = valid_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=valid_X.shape)
 x_train_noisy = np.clip(x_train_noisy, 0., 1.)
@@ -155,6 +188,36 @@ autoencoder.compile(loss='mean_squared_error', optimizer = 'rmsprop')
 # Train model - DA (note x_train_noisy and train_X are same shape)
 autoencoder_train = autoencoder.fit(x_train_noisy, train_X, batch_size=batch_size,epochs=epochs,
                                     verbose=1,validation_data=(x_valid_noisy, valid_X))
+
+# Get intermediate layer (phenotype) from trained model
+layer_name = 'up_sampling1d_8'
+intermediate_layer_model = Model(inputs=autoencoder.input,
+                                 outputs=autoencoder.get_layer(layer_name).output)
+d_noisy = d + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=d.shape)
+intermediate_output = intermediate_layer_model.predict(d_noisy) # N x k/4 x 128, get phenotype for entire dataset d
+phenotype = Conv1D(1, (3,), activation='sigmoid', padding='same')(intermediate_output)  # N x k/4 x 1
+
+# XGBoost for phenotype and train_labels
+clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+clf = LogisticRegression(max_iter=1000)
+clf = RandomForestClassifier()
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
+# Model - Year 1
+y = train_labels
+X = phenotype.numpy()[0]
+dct_score = {}
+for s in scores:
+    dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s).mean(), 4)
+    print('CV score completed -- %s' % s)
+print(dct_score)
+
+'''
+DA - XGBoost
+Year 1: {'roc_auc': 0.6054, 'f1': 0.2738, 'precision': 0.4233, 'recall': 0.2036, 'accuracy': 0.679, 'neg_brier_score': -0.2174}
+
+DA - Logit
+Year 1: {'roc_auc': 0.6362, 'f1': 0.0059, 'precision': 0.6143, 'recall': 0.003, 'accuracy': 0.7022, 'neg_brier_score': -0.2013}
+'''
 
 
 
