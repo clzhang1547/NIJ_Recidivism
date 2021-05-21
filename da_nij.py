@@ -6,11 +6,15 @@
 # TODO [done]: check DA loss graph on denoising x_train_noisy <- noise factor=0.01 works for NIJ data
 # ^noise factor=0.02 divegence occurs, 0.1, 0.5 bad
 # TODO [done]: add constant xvars so #cols = 4X, 8X allowing encoding/decoding flexibility to lower dim
-# TODO: noise=0.5 good, pred on d (no noise). Try noise=1, pred on d, until noise too large (hurting perf)
+# TODO: [done] noise=0.5 good, pred on d (no noise). Try noise=1, pred on d, until noise too large (hurting perf)
 #^cannot overwrite autoencoder obj with new noise_factor ow diverging, rerun code to ensure valid result
-# TODO: set noise a la Beaulieu-Jones 2016: randomly set to 0 for 20% values of input matrix
-# TODO: Year 1 results with 128>>64 xvars and 0.5 noise get similar/worse perf vs ML. Try 32 or 8 xvars, random 0 as noise
+# TODO: [done] set noise a la Beaulieu-Jones 2016: randomly set to 0 for 20% values of input matrix
+# TODO: [done] Year 1 results with 128>>64 xvars and 0.5 noise get similar/worse perf vs ML. Try 32 or 8 xvars, random 0 as noise
 # TODO: add in ACS/GA crime xvars (re Mason/Sandeep)
+# TODO: check the combination of different denoised features (phenotypes) for prediction
+# TODO: check RNN for DA
+# TODO: try dropping NA rows (fillna may introduce noise)
+# TODO: optimize wrt phat thre for 0/1 to improve performance, check FP/FN along distribution of phat
 ##################################
 
 import os
