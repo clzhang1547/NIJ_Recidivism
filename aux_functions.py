@@ -7,6 +7,25 @@ import pandas as pd
 import random
 from sklearn.preprocessing import OneHotEncoder
 import numpy as np
+from sklearn.cluster import KMeans
+
+# a function to define supervision activity columns
+def get_sup_act_cols():
+    cols_sup_act = ['drugtests_other_positive', 'drugtests_meth_positive', 'avg_days_per_drugtest',
+                    'violations_failtoreport', 'jobs_per_year', 'program_unexcusedabsences', 'residence_changes',
+                    'program_attendances', 'drugtests_thc_positive', 'delinquency_reports',
+                    'drugtests_cocaine_positive', 'violations_instruction', 'violations_movewithoutpermission',
+                    'percent_days_employed', 'employment_exempt', 'violations_electronicmonitoring']
+    return cols_sup_act
+
+def get_prior_crime_cols():
+    cols_prior_crime = ['prior_arrest_episodes_felony', 'prior_arrest_episodes_misd', 'prior_arrest_episodes_violent',
+                        'prior_arrest_episodes_property', 'prior_arrest_episodes_drug', 'prior_arrest_episodes_ppviolationcharges',
+                        'prior_arrest_episodes_dvcharges', 'prior_arrest_episodes_guncharges', 'prior_conviction_episodes_felony',
+                        'prior_conviction_episodes_misd', 'prior_conviction_episodes_viol', 'prior_conviction_episodes_prop',
+                        'prior_conviction_episodes_drug', 'prior_conviction_episodes_ppviolationcharges',
+                        'prior_conviction_episodes_domesticviolencecharges', 'prior_conviction_episodes_guncharges']
+    return cols_prior_crime
 
 # a function to read and clean up raw data
 def read_and_clean_raw(fp):
@@ -21,13 +40,18 @@ def read_and_clean_raw(fp):
     df = df.rename(columns=dct_rename)
     df.columns = [x.lower() for x in df.columns]
     return df
-# a function to fill in NAs using random draw from valid values in column
-def fill_na(col):
+# a function to fill in NAs, default fill-in value is random draw from valid values in column
+def fill_na(col, value='random'):
     # col: a df column, pdSeries
     if True not in col.isna().value_counts().index: # no NA
         pass
-    else: # at least 1 NA
-        col = [random.choice(col.dropna().values) if pd.isnull(x) else x for x in col]
+    else:
+        # at least 1 NA
+        # fill with random value
+        if value == 'random':
+            col = [random.choice(col.dropna().values) if pd.isnull(x) else x for x in col]
+        elif value == 'median':
+            col = pd.DataFrame(col).fillna(value=col.median())
     return col
 
 # a function to perform One Hot Encoding
@@ -79,3 +103,26 @@ def set_random_nonzero_elements(array, prop, fill=0):
     filled_array = array.copy()
     filled_array[random_idxs0, random_idxs1] = fill
     return filled_array
+
+# a function to km-cluster a df_col, which can be purely numeric or boolean
+# the ONLY non-numeric string value in df_col should be ' or more' as in '10 or more'
+def get_km_subgroups(df_col):
+    # df_col: a df col
+    # make a copy of df_col, df_col will be unchanged
+    col = df_col.copy()
+    # if bool col then convert to int
+    if col.dtype.name=='bool':
+        col = col.astype(int)
+    elif col.dtype.name=='object':
+        # remove string in col values and make numeric
+        col = [x.replace(' or more', '') for x in col]
+        col = pd.Series(col)
+        col = col.astype(int)
+    # k-means fit and get labels
+    km = KMeans(n_clusters=2).fit(col.values.reshape(-1, 1))
+    labels = km.labels_.tolist()
+    # get km-based new col
+    col_name = df_col.name # for renaming km-based col
+    km_col = pd.Series(labels, name=col_name)
+
+    return km_col
