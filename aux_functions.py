@@ -8,6 +8,7 @@ import random
 from sklearn.preprocessing import OneHotEncoder
 import numpy as np
 from sklearn.cluster import KMeans
+from keras.layers import Input,Conv1D,MaxPooling1D,UpSampling1D
 
 # a function to define supervision activity columns
 def get_sup_act_cols():
@@ -126,3 +127,50 @@ def get_km_subgroups(df_col):
     km_col = pd.Series(labels, name=col_name)
 
     return km_col
+
+# Autoencoder - 3 layers
+def autoencoder(input_img):
+    #encoder
+    #input = k x 1 (wide and thin)
+    conv1 = Conv1D(32, (3), activation='relu', padding='same')(input_img) # k x 1 x 32
+    pool1 = MaxPooling1D(pool_size=2)(conv1) # k/2 x 1 x 32
+    conv2 = Conv1D(64, (3), activation='relu', padding='same')(pool1) # k/2 x 1 x 64
+    pool2 = MaxPooling1D(pool_size=2)(conv2) # k/2 x 1 x 64
+    conv3 = Conv1D(128, (3), activation='relu', padding='same')(pool2) # k/4 x 1 x 128 (small and thick)
+
+
+    #decoder
+    conv4 = Conv1D(128, (3), activation='relu', padding='same')(conv3) # k/4 x 1 x 128
+    up1 = UpSampling1D(2)(conv4) # k/2 x 1 x 128
+    conv5 = Conv1D(64, (3), activation='relu', padding='same')(up1) # k/2 x 1 x 64
+    up2 = UpSampling1D(2)(conv5) # k x 1 x 64
+    decoded = Conv1D(1, (3,), activation='sigmoid', padding='same')(up2) # k x 1 x 1
+    return decoded
+
+# Autoencoder - 5 layers
+def autoencoder_deep(input_img):
+    # a deeper CNN with lowest phenotype dim to k/16
+    # Note - k should be dividable by pool_size multiple times, as set by conv structure
+    #encoder
+    #input = k x 1 (wide and thin)
+    conv1 = Conv1D(32, (3), activation='relu', padding='same')(input_img) # k x 1 x 32
+    pool1 = MaxPooling1D(pool_size=2)(conv1) # k/2 x 1 x 32
+    conv2 = Conv1D(64, (3), activation='relu', padding='same')(pool1) # k/2 x 1 x 64
+    pool2 = MaxPooling1D(pool_size=2)(conv2) # k/4 x 1 x 64
+    conv3 = Conv1D(128, (3), activation='relu', padding='same')(pool2) # k/4 x 1 x 128
+    pool3 = MaxPooling1D(pool_size=2)(conv3) # k/8 x 1 x 128
+    conv4 = Conv1D(256, (3), activation='relu', padding='same')(pool3) # k/8 x 1 x 256
+    pool4 = MaxPooling1D(pool_size=2)(conv4) # k/16 x 1 x 256
+    conv5 = Conv1D(512, (3), activation='relu', padding='same')(pool4) # k/16 x 1 x 512
+
+    #decoder
+    conv6 = Conv1D(512, (3), activation='relu', padding='same')(conv5) # k/16 x 1 x 512
+    up1 = UpSampling1D(2)(conv6) # k/8 x 1 x 512
+    conv7 = Conv1D(256, (3), activation='relu', padding='same')(up1) # k/8 x 1 x 256
+    up2 = UpSampling1D(2)(conv7) # k/4 x 1 x 256
+    conv8 = Conv1D(128, (3,), activation='relu', padding='same')(up2) # k/4 x 1 x 128
+    up3 = UpSampling1D(2)(conv8) # k/2 x 1 x 129
+    conv9 = Conv1D(64, (3,), activation='relu', padding='same')(up3) # k/2 x 1 x 64
+    up4 = UpSampling1D(2)(conv9) # k x 1 x 64
+    decoded = Conv1D(1, (3,), activation='sigmoid', padding='same')(up4) # k x 1 x 1
+    return decoded

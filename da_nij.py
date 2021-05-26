@@ -13,10 +13,14 @@
 # TODO: [done - not applicable?] check RNN for DA
 # TODO: [done] try dropping NA rows (fillna may introduce noise) - not improving
 # TODO: [done] check subgroups (arrest/conviction types) - not improving
-# TODO: no DA, use orig d for autoencoder and get phenotypes, run XGBoost/Shapley to get top phenotypes, run ML
+# TODO: [done] use deepder autoencoder to enable 32/16 phenotypes..not improving
+# TODO: [done] no DA, use orig d for autoencoder and get 64/32 phenotypes, run XGBoost/Shapley to get top phenotypes, run ML - not improving
+# TODO: [done] use phenotype + orig xvars - not improving (barely WORSE than uing only orig xvars)
 # TODO: add in ACS/GA crime xvars (re Mason/Sandeep)
+# 1. Crime data - collapse by puma_group, get n_type, group_pop, n_type per capita
+# 2. THOR data - get count by county, map to puma_group, get count by puma_group
+# 3. ACS data - merge in xvar in each table by puma_group
 # TODO: optimize wrt phat thre for 0/1 to improve performance, check FP/FN along distribution of phat
-# TODO: check the combination of different denoised features (phenotypes) for prediction
 
 ##################################
 
@@ -41,194 +45,175 @@ from aux_functions import *
 
 from sklearn.model_selection import cross_val_score
 import xgboost
+from xgboost import plot_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+import shap
 import json
+import matplotlib.pyplot as plt
 
-prior_crime_cols = get_prior_crime_cols()
-layer_counter = 0 # upsampling layer name suffix, +2 in each loop of prior_crime_col
-for prior_crime_col in prior_crime_cols:
-    print('='*50)
-    print('KM-subgroup analysis - c = %s' % prior_crime_col)
-    print('=' * 50)
-    # Read in data
-    # d will be purely train data (no id, no yvars)
-    d = read_and_clean_raw(fp='data/nij/NIJ_s_Recidivism_Challenge_Training_Dataset.csv')
-    cols_ys = ['recidivism_within_3years', 'recidivism_arrest_year1', 'recidivism_arrest_year2', 'recidivism_arrest_year3']
-    yvar = 'recidivism_arrest_year1'
-    train_labels = d[yvar].astype(int)
-    d = d[[x for x in d.columns if x not in cols_ys]]
-    # get supervision activity cols
-    cols_sup_act = get_sup_act_cols()
+# Read in data
+# d will be purely train data (no id, no yvars)
+d = read_and_clean_raw(fp='data/nij/NIJ_s_Recidivism_Challenge_Training_Dataset.csv')
+cols_ys = ['recidivism_within_3years', 'recidivism_arrest_year1', 'recidivism_arrest_year2', 'recidivism_arrest_year3']
+yvar = 'recidivism_arrest_year1'
+train_labels = d[yvar].astype(int)
+d = d[[x for x in d.columns if x not in cols_ys]]
+# get supervision activity cols
+cols_sup_act = get_sup_act_cols()
 
-    # Fill in NAs
-    print(d.isna().sum())
-    na_count = d.isna().sum()
-    na_cols = na_count[na_count>0].index
-    # NA option 1 - fill with random valid values
-    for c in na_cols:
-        d[c] = fill_na(d[c])
-    # NA option 2 - drop rows with any NA in relevant xvars
-    # if yvar == 'recidivism_arrest_year1':
-    #     d = d.dropna(how='any', subset=set(na_cols) - set(cols_sup_act))
-    # if yvar in ['recidivism_arrest_year2', 'recidivism_arrest_year3']:
-    #     d = d.dropna(how='any', subset=set(na_cols))
-    # check dtype, set puma to str
-    #print(d.dtypes)
-    d['residence_puma'] = pd.Series(d['residence_puma'], dtype='str')
-    # Subgrouping
+# Fill in NAs
+print(d.isna().sum())
+na_count = d.isna().sum()
+na_cols = na_count[na_count>0].index
+# NA option 1 - fill with random valid values
+for c in na_cols:
+    d[c] = fill_na(d[c])
+# NA option 2 - drop rows with any NA in relevant xvars
+# if yvar == 'recidivism_arrest_year1':
+#     d = d.dropna(how='any', subset=set(na_cols) - set(cols_sup_act))
+# if yvar in ['recidivism_arrest_year2', 'recidivism_arrest_year3']:
+#     d = d.dropna(how='any', subset=set(na_cols))
+# check dtype, set puma to str
+#print(d.dtypes)
+d['residence_puma'] = pd.Series(d['residence_puma'], dtype='str')
 
-    # subgroup option 1 - using labels
-    # d = d[d['supervision_risk_score_first']>=6]
-    # d = d[d['age_at_release'].isin(['23-27', '28-32', '33-37'])]
-    # d = d[d['gang_affiliated']==1]
-    # d = d[~d['prior_arrest_episodes_ppviolationcharges'].isin(['0'])]
+# update train_labels with non-NA index in d
+train_labels = train_labels[d.index]
 
-    # subgroup option 2  - K means clustering (for Prior GA Criminal History xvars)
-    xvar_subgroup = prior_crime_col
-    d['km_%s' % xvar_subgroup] = get_km_subgroups(d[xvar_subgroup])
-    cluster_used = 1
-    d = d[d['km_%s' % xvar_subgroup]==cluster_used]
+# One Hot Encoding
+# find boolean columns - set False, True = 0, 1 for bool cols
+bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
+d[bool_cols] = d[bool_cols].astype(int)
+print(two_class_cols) # manually encode two class cols
+d['female'] = np.where(d['gender']=='F', 1, 0)
+d['black'] = np.where(d['race']=='BLACK', 1, 0)
+# cols not to be encoded
+cols_no_enc = ['id', 'supervision_risk_score_first',
+               'avg_days_per_drugtest', 'drugtests_thc_positive', 'drugtests_cocaine_positive',
+               'drugtests_meth_positive', 'drugtests_other_positive', 'percent_days_employed', 'jobs_per_year',]
+# supervision activity cols, to be excl. from year 1 model
+if yvar == 'recidivism_arrest_year1':
+    d = d.drop(columns=cols_sup_act)
+# define categorical (3+ cats) cols
+cat_cols = set(d.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) \
+           - set(cols_no_enc) - set(['female', 'black', 'id'])
 
-    # Set groupd id for naming output json file
-    group_id = xvar_subgroup + '_' + str(cluster_used)
-    # update train_labels with non-NA index in d
-    train_labels = train_labels[d.index]
+# add dummies to d
+dummies = pd.get_dummies(d[cat_cols], drop_first=False)
+d = d.join(dummies)
+d = d.drop(columns=list(cat_cols) + two_class_cols)
+del d['id']
 
-    # One Hot Encoding
-    # find boolean columns - set False, True = 0, 1 for bool cols
-    bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
-    d[bool_cols] = d[bool_cols].astype(int)
-    print(two_class_cols) # manually encode two class cols
-    d['female'] = np.where(d['gender']=='F', 1, 0)
-    d['black'] = np.where(d['race']=='BLACK', 1, 0)
-    # cols not to be encoded
-    cols_no_enc = ['id', 'supervision_risk_score_first',
-                   'avg_days_per_drugtest', 'drugtests_thc_positive', 'drugtests_cocaine_positive',
-                   'drugtests_meth_positive', 'drugtests_other_positive', 'percent_days_employed', 'jobs_per_year',]
-    # supervision activity cols, to be excl. from year 1 model
-    if yvar == 'recidivism_arrest_year1':
-        d = d.drop(columns=cols_sup_act)
-    # define categorical (3+ cats) cols
-    cat_cols = set(d.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) \
-               - set(cols_no_enc) - set(['female', 'black', 'id'])
+# drop some xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
+# del d['prior_arrest_episodes_property_1']
+# del d['prior_arrest_episodes_property_2']
 
-    # add dummies to d
-    dummies = pd.get_dummies(d[cat_cols], drop_first=False)
-    d = d.join(dummies)
-    d = d.drop(columns=list(cat_cols) + two_class_cols)
-    del d['id']
+# add constant xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
+for i in range(128 - d.shape[1]):
+    d['z_%s' % i] = 1
 
-    # drop some xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
-    # del d['prior_arrest_episodes_property_1']
-    # del d['prior_arrest_episodes_property_2']
+# Reshape train data
+d = np.array(d)
+n, k = d.shape
+d = d.reshape(-1, k, 1)
 
-    # add constant xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
-    for i in range(128 - d.shape[1]):
-        d['z_%s' % i] = 1
+# Rescale train data
+d = d/np.max(d)
 
-    # Reshape train data
-    d = np.array(d)
-    n, k = d.shape
-    d = d.reshape(-1, k, 1)
-
-    # Rescale train data
-    d = d/np.max(d)
-
-    # split train for validation
-    train_X,valid_X,train_ground,valid_ground = train_test_split(d,
-                                                                 d,
-                                                                 test_size=0.2,
-                                                                 random_state=13)
-
-    # Autoencoder
-    def autoencoder(input_img):
-        #encoder
-        #input = k x 1 (wide and thin)
-        conv1 = Conv1D(32, (3), activation='relu', padding='same')(input_img) # k x 1 x 32
-        pool1 = MaxPooling1D(pool_size=2)(conv1) # k/2 x 1 x 32
-        conv2 = Conv1D(64, (3), activation='relu', padding='same')(pool1) # k/2 x 1 x 64
-        pool2 = MaxPooling1D(pool_size=2)(conv2) # k/2 x 1 x 64
-        conv3 = Conv1D(128, (3), activation='relu', padding='same')(pool2) # k/4 x 1 x 128 (small and thick)
+# split train for validation
+train_X,valid_X,train_ground,valid_ground = train_test_split(d,
+                                                             d,
+                                                             test_size=0.2,
+                                                             random_state=13)
 
 
-        #decoder
-        conv4 = Conv1D(128, (3), activation='relu', padding='same')(conv3) # k/4 x 1 x 128
-        up1 = UpSampling1D(2)(conv4) # k/2 x 1 x 128
-        conv5 = Conv1D(64, (3), activation='relu', padding='same')(up1) # k/2 x 1 x 64
-        up2 = UpSampling1D(2)(conv5) # k x 1 x 64
-        decoded = Conv1D(1, (3,), activation='sigmoid', padding='same')(up2) # k x 1 x 1
-        return decoded
 
-    # Add noise to train/valid data
-    # noise_factor = 0.5 # 0.5 on NIJ data would cause valid loss diverging up, 0.01 is good for convergence
-    # x_train_noisy = train_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=train_X.shape)
-    # x_valid_noisy = valid_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=valid_X.shape)
-    # x_train_noisy = np.clip(x_train_noisy, 0., 1.)
-    # x_valid_noisy = np.clip(x_valid_noisy, 0., 1.)
-    noise_prop = 0.2
-    x_train_noisy = set_random_nonzero_elements(train_X, noise_prop, fill=0)
-    x_valid_noisy = set_random_nonzero_elements(valid_X, noise_prop, fill=0)
+# Add noise to train/valid data
 
-    # Denoise Autoencoder Hyperparameters
-    batch_size = 128
-    epochs = 20
-    input_img = Input(shape = (k, 1))
+# noise_factor = 0.5 # 0.5 on NIJ data would cause valid loss diverging up, 0.01 is good for convergence
+# x_train_noisy = train_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=train_X.shape)
+# x_valid_noisy = valid_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=valid_X.shape)
+# x_train_noisy = np.clip(x_train_noisy, 0., 1.)
+# x_valid_noisy = np.clip(x_valid_noisy, 0., 1.)
 
-    autoencoder = Model(input_img, autoencoder(input_img))
-    autoencoder.compile(loss='mean_squared_error', optimizer = 'rmsprop')
-    # Train model - DA (note x_train_noisy and train_X are same shape)
-    autoencoder_train = autoencoder.fit(x_train_noisy, train_X, batch_size=batch_size,epochs=epochs,
-                                        verbose=1,validation_data=(x_valid_noisy, valid_X))
+# noise_prop = 0.2
+# x_train_noisy = set_random_nonzero_elements(train_X, noise_prop, fill=0)
+# x_valid_noisy = set_random_nonzero_elements(valid_X, noise_prop, fill=0)
 
-    # Training vs Validation Loss Plot
-    # loss = autoencoder_train.history['loss']
-    # val_loss = autoencoder_train.history['val_loss']
-    # epochs = range(epochs)
-    # plt.figure()
-    # plt.plot(epochs, loss, 'bo', label='Training loss')
-    # plt.plot(epochs, val_loss, 'b', label='Validation loss')
-    # plt.title('Training and validation loss')
-    # plt.legend()
-    # plt.show()
+# Denoise Autoencoder Hyperparameters
+batch_size = 128
+epochs = 10
+input_img = Input(shape = (k, 1))
 
-    # Get intermediate layer (phenotype) from trained model
-    # get second last UpSampling1D layer
-    if layer_counter==0:
-        layer_name = 'up_sampling1d'
-    elif layer_counter>0:
-        layer_name = 'up_sampling1d' + '_%s' % layer_counter
+autoencoder = Model(input_img, autoencoder_deep(input_img))
+autoencoder.compile(loss='mean_squared_error', optimizer = 'rmsprop')
+# Train model - DA (note x_train_noisy and train_X are same shape)
+autoencoder_train = autoencoder.fit(train_X, train_ground, batch_size=batch_size,epochs=epochs,
+                                    verbose=1,validation_data=(valid_X, valid_ground))
 
-    intermediate_layer_model = Model(inputs=autoencoder.input,
-                                     outputs=autoencoder.get_layer(layer_name).output)
-    intermediate_output = intermediate_layer_model.predict(d) # N x k/4 x 128, get phenotype for entire dataset d
-    phenotype = Conv1D(1, (3,), activation='sigmoid', padding='same')(intermediate_output)  # N x k/4 x 1
-    phenotype = phenotype.numpy()[:,:,0]
-    # XGBoost for phenotype and train_labels
-    # clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
-    clf = LogisticRegression(max_iter=1000)
-    # clf = RandomForestClassifier()
-    scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
-    # Model - Year 1
-    y = train_labels
-    X = phenotype
-    dct_score = {}
-    for s in scores:
-        v = round(cross_val_score(clf, X, y, cv=5, scoring=s).mean(), 4)
-        dct_score[s] = v
-        print('CV score completed -- %s=%s' % (s, v))
-    print(dct_score)
+# Training vs Validation Loss Plot
+loss = autoencoder_train.history['loss']
+val_loss = autoencoder_train.history['val_loss']
+epochs = range(epochs)
+plt.figure()
+plt.plot(epochs, loss, 'bo', label='Training loss')
+plt.plot(epochs, val_loss, 'b', label='Validation loss')
+plt.title('Training and validation loss')
+plt.legend()
+plt.show()
 
-    # Export scores
-    fp_out = './output/score_%s_%s.json' % (yvar.split('_')[-1], group_id) # group_id defined when subgrouping d
-    with open(fp_out, 'w') as f:
-        json.dump(dct_score, f)
+# Get intermediate layer (phenotype) from trained model
+# get first UpSampling1D layer
+layer_name = 'up_sampling1d'
 
-    # del autoencoder from memory so up_sampling1d layer name can be recycled
-    # del autoencoder
-    # del autoencoder_train
-    # update layer_counter by 2 (2 upsampling layers in autoencoder function)
-    layer_counter +=2
+intermediate_layer_model = Model(inputs=autoencoder.input,
+                                 outputs=autoencoder.get_layer(layer_name).output)
+intermediate_output = intermediate_layer_model.predict(d) # N x k/4 x 128, get phenotype for entire dataset d
+phenotype = Conv1D(1, (3,), activation='sigmoid', padding='same')(intermediate_output)  # N x k/4 x 1
+phenotype = phenotype.numpy()[:,:,0]
+
+# Check importance of phenotype cols on yvar
+clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False)
+y = train_labels
+X = phenotype
+clf.fit(X, y)
+
+# Shap Values - plot is slow!
+# explainer = shap.TreeExplainer(clf)
+# shap_vals = explainer.shap_values(X)
+# shap.summary_plot(shap_vals, X, max_display=X.shape[1])
+# shap.summary_plot(shap_vals, X, show=False, max_display=X.shape[1])
+# plt.savefig("./output/summary_plot.pdf")
+
+# Select most important cols from phenotype array using importance score
+n_phenotype = 2 # number of latent phenotypes to be used as predictors
+importance = pd.Series(clf.get_booster().get_score(importance_type='gain')).sort_values(ascending=False)
+phenotype_idxs = [int(x.replace('f', '')) for x in importance.head(n_phenotype).index]
+phenotype_xvars = phenotype[:, phenotype_idxs]
+
+# XGBoost for phenotype and train_labels
+# clf_forecast = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+clf_forecast = LogisticRegression(penalty='l2', max_iter=1000, solver='lbfgs') # l1 penalty use liblinear
+# clf_forecast = RandomForestClassifier()
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
+# Model - Year 1
+y = train_labels
+#X = phenotype_xvars
+#X = np.concatenate((phenotype_xvars, d[:,:-6,0]), axis=1) # phenotype plus original xvars
+X = d[:,:-6,0]
+dct_score = {}
+for s in scores:
+    v = round(cross_val_score(clf_forecast, X, y, cv=5, scoring=s).mean(), 4)
+    dct_score[s] = v
+    print('CV score completed -- %s=%s' % (s, v))
+print(dct_score)
+
+# Export scores
+# fp_out = './output/score_%s_%s.json' % (yvar.split('_')[-1], group_id) # group_id defined when subgrouping d
+# with open(fp_out, 'w') as f:
+#     json.dump(dct_score, f)
+
 
 '''
 DA - XGBoost (noise_factor = 0.5)
