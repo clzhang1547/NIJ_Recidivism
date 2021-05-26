@@ -13,13 +13,16 @@
 # TODO: [done - not applicable?] check RNN for DA
 # TODO: [done] try dropping NA rows (fillna may introduce noise) - not improving
 # TODO: [done] check subgroups (arrest/conviction types) - not improving
-# TODO: [done] use deepder autoencoder to enable 32/16 phenotypes..not improving
+# TODO: [done] use deeper autoencoder to enable 32/16 phenotypes..not improving
 # TODO: [done] no DA, use orig d for autoencoder and get 64/32 phenotypes, run XGBoost/Shapley to get top phenotypes, run ML - not improving
-# TODO: [done] use phenotype + orig xvars - not improving (barely WORSE than uing only orig xvars)
+# TODO: [done] use phenotype + orig xvars - not improving (barely WORSE than using only orig xvars)
 # TODO: add in ACS/GA crime xvars (re Mason/Sandeep)
 # 1. Crime data - collapse by puma_group, get n_type, group_pop, n_type per capita
 # 2. THOR data - get count by county, map to puma_group, get count by puma_group
 # 3. ACS data - merge in xvar in each table by puma_group
+# TODO: feature engineering priority!! - interaction terms?
+# TODO: ensemble method - sklearn
+# TODO: keras NN on prediction
 # TODO: optimize wrt phat thre for 0/1 to improve performance, check FP/FN along distribution of phat
 
 ##################################
@@ -43,7 +46,7 @@ pd.set_option('display.max_columns', 999)
 pd.set_option('display.width', 200)
 from aux_functions import *
 
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, cross_validate
 import xgboost
 from xgboost import plot_importance
 from sklearn.linear_model import LogisticRegression
@@ -131,11 +134,11 @@ train_X,valid_X,train_ground,valid_ground = train_test_split(d,
 
 # Add noise to train/valid data
 
-# noise_factor = 0.5 # 0.5 on NIJ data would cause valid loss diverging up, 0.01 is good for convergence
-# x_train_noisy = train_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=train_X.shape)
-# x_valid_noisy = valid_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=valid_X.shape)
-# x_train_noisy = np.clip(x_train_noisy, 0., 1.)
-# x_valid_noisy = np.clip(x_valid_noisy, 0., 1.)
+noise_factor = 1 # 0.5 on NIJ data is good for convergence
+x_train_noisy = train_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=train_X.shape)
+x_valid_noisy = valid_X + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=valid_X.shape)
+x_train_noisy = np.clip(x_train_noisy, 0., 1.)
+x_valid_noisy = np.clip(x_valid_noisy, 0., 1.)
 
 # noise_prop = 0.2
 # x_train_noisy = set_random_nonzero_elements(train_X, noise_prop, fill=0)
@@ -143,14 +146,15 @@ train_X,valid_X,train_ground,valid_ground = train_test_split(d,
 
 # Denoise Autoencoder Hyperparameters
 batch_size = 128
-epochs = 10
+epochs = 30 # white noise factor=1>>max epoch 30
 input_img = Input(shape = (k, 1))
 
-autoencoder = Model(input_img, autoencoder_deep(input_img))
+autoencoder = Model(input_img, autoencoder(input_img))
 autoencoder.compile(loss='mean_squared_error', optimizer = 'rmsprop')
 # Train model - DA (note x_train_noisy and train_X are same shape)
-autoencoder_train = autoencoder.fit(train_X, train_ground, batch_size=batch_size,epochs=epochs,
-                                    verbose=1,validation_data=(valid_X, valid_ground))
+# - use fit(train_X, train_ground), validation_data=(valid_X, valid_ground) for zero-noise autoencoder
+autoencoder_train = autoencoder.fit(x_train_noisy, train_X, batch_size=batch_size,epochs=epochs,
+                                    verbose=1,validation_data=(x_valid_noisy, valid_X))
 
 # Training vs Validation Loss Plot
 loss = autoencoder_train.history['loss']
@@ -187,26 +191,22 @@ clf.fit(X, y)
 # plt.savefig("./output/summary_plot.pdf")
 
 # Select most important cols from phenotype array using importance score
-n_phenotype = 2 # number of latent phenotypes to be used as predictors
 importance = pd.Series(clf.get_booster().get_score(importance_type='gain')).sort_values(ascending=False)
+n_phenotype = len(importance) # number of latent phenotypes to be used as predictors, max=len(importance)
 phenotype_idxs = [int(x.replace('f', '')) for x in importance.head(n_phenotype).index]
 phenotype_xvars = phenotype[:, phenotype_idxs]
 
 # XGBoost for phenotype and train_labels
-# clf_forecast = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
-clf_forecast = LogisticRegression(penalty='l2', max_iter=1000, solver='lbfgs') # l1 penalty use liblinear
+clf_forecast = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+# clf_forecast = LogisticRegression(penalty='l2', max_iter=1000, solver='lbfgs') # l1 penalty use liblinear
 # clf_forecast = RandomForestClassifier()
 scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
 # Model - Year 1
 y = train_labels
 #X = phenotype_xvars
-#X = np.concatenate((phenotype_xvars, d[:,:-6,0]), axis=1) # phenotype plus original xvars
-X = d[:,:-6,0]
-dct_score = {}
-for s in scores:
-    v = round(cross_val_score(clf_forecast, X, y, cv=5, scoring=s).mean(), 4)
-    dct_score[s] = v
-    print('CV score completed -- %s=%s' % (s, v))
+X = np.concatenate((phenotype_xvars, d[:,:-6,0]), axis=1) # phenotype plus original xvars
+# X = d[:,:-6,0]
+dct_score = cross_validate(clf_forecast, X, y, cv=5, scoring=scores)
 print(dct_score)
 
 # Export scores
@@ -227,6 +227,12 @@ Year 1: {'roc_auc': 0.6411, 'f1': 0.0232, 'precision': 0.5125, 'recall': 0.0119,
 
 DA - Random Forest (noise_factor = 0.02)
 Year 1: {'roc_auc': 0.6389, 'f1': 0.1057, 'precision': 0.4685, 'recall': 0.0612, 'accuracy': 0.7011, 'neg_brier_score': -0.1992}
+
+DA - XGBoost (noise_factor=1, epoch=30(max), all 64 phenotype cols)
+Year 1: {'roc_auc': 0.6298, 'f1': 0.305, 'precision': 0.4602, 'recall': 0.2306, 'accuracy': 0.6884, 'neg_brier_score': -0.2111}
+
+DA - XGBoost (noise_factor=1, epoch=30(max), all 64 phenotype cols + orig cols)
+Year 1: {'roc_auc': 0.6576, 'f1': 0.3375, 'precision': 0.4862, 'recall': 0.2605, 'accuracy': 0.696, 'neg_brier_score': -0.2057}
 
 ======================= DA with random 20% 0s on nonzero elements =====================
 DA0 - XGBoost
@@ -255,6 +261,7 @@ Year 1: {'roc_auc': 0.5799, 'f1': 0.4654, 'precision': 0.4991, 'recall': 0.4377,
 
 DA0, epoch=20, subgroup(prior_arrest_episodes_ppviolationcharges=1) - XGBoost
 Year 1: {'roc_auc': 0.5907, 'f1': 0.3149, 'precision': 0.4365, 'recall': 0.2468, 'accuracy': 0.6404, 'neg_brier_score': -0.2362}
+
 
 '''
 # #
