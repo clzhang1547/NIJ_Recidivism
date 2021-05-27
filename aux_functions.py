@@ -28,6 +28,22 @@ def get_prior_crime_cols():
                         'prior_conviction_episodes_domesticviolencecharges', 'prior_conviction_episodes_guncharges']
     return cols_prior_crime
 
+# a function to get cols for dummies
+def get_dummy_cols(var):
+    cols = ['']
+    if var=='age_at_release':
+        cols = ['18-22', '23-27', '28-32', '33-37', '38-42', '43-47', '48 or older']
+    elif var=='education_level':
+        cols = ['Less than HS diploma', 'High School Diploma', 'At least some college']
+    elif var=='dependents':
+        cols = ['0', '1', '2', '3 or more']
+    elif var=='prison_offense':
+        cols = ['Drug', 'Other', 'Property', 'Violent/Non-Sex', 'Violent/Sex']
+    elif var=='prison_years':
+        cols = ['Less than 1 year', '1-2 years', 'Greater than 2 to 3 years', 'More than 3 years']
+    cols = [var + '_' + x for x in cols]
+    return cols
+
 # a function to read and clean up raw data
 def read_and_clean_raw(fp):
     df = pd.read_csv(fp)
