@@ -9,6 +9,9 @@ from sklearn.preprocessing import OneHotEncoder
 import numpy as np
 from sklearn.cluster import KMeans
 from keras.layers import Input,Conv1D,MaxPooling1D,UpSampling1D
+from sklearn.linear_model import LogisticRegression, LinearRegression
+import math
+import mord
 
 # a function to define supervision activity columns
 def get_sup_act_cols():
@@ -190,3 +193,36 @@ def autoencoder_deep(input_img):
     up4 = UpSampling1D(2)(conv9) # k x 1 x 64
     decoded = Conv1D(1, (3,), activation='sigmoid', padding='same')(up4) # k x 1 x 1
     return decoded
+
+# Imputation - get expected supervision activities
+def get_expected_sup_act_cols(xvars_yr1, sup_act):
+    # xvars_yr1: df of NIJ features (one-hot encoded) without 16 supervision activity cols
+    # sup_act: df of 16 sup_act cols
+    # init output df
+    exp_sup_act = pd.DataFrame([])
+    cols_sup_act = get_sup_act_cols()
+    for c in cols_sup_act:
+        if c in ['violations_electronicmonitoring', 'violations_failtoreport', 'violations_instruction',
+                 'violations_movewithoutpermission', 'employment_exempt']:
+            clf =  LogisticRegression(penalty='l2', max_iter=1000, solver='lbfgs')
+            clf.fit(xvars_yr1, sup_act[c])
+            exp_sup_act['_exp_%s' % c] = clf.predict(xvars_yr1)
+        elif c in ['drugtests_cocaine_positive', 'drugtests_meth_positive', 'drugtests_other_positive',
+                   'drugtests_thc_positive', 'percent_days_employed', 'jobs_per_year']:
+            clf = LinearRegression()
+            clf.fit(xvars_yr1, sup_act[c])
+            exp_sup_act['_exp_%s' % c] = clf.predict(xvars_yr1)
+            if c=='jobs_per_year': # c bound by 0+
+                exp_sup_act['_exp_%s' % c] = [max(x, 0) for x in exp_sup_act['_exp_%s' % c]]
+            else: # c bound by [0,1]
+                exp_sup_act['_exp_%s' % c] = [min(max(x, 0), 1) for x in exp_sup_act['_exp_%s' % c]]
+        elif c in ['avg_days_per_drugtest']: # use log-OLS for highly skewed outvar
+            clf = LinearRegression()
+            clf.fit(xvars_yr1, [math.log(x) for x in sup_act[c]])
+            exp_sup_act['_exp_%s' % c] = [math.exp(x) for x in clf.predict(xvars_yr1)]
+        elif c in ['delinquency_reports', 'program_attendances', 'program_unexcusedabsences',
+                   'residence_changes']:
+            clf = mord.LogisticAT().fit(xvars_yr1, sup_act[c])
+            exp_sup_act['_exp_%s' % c] = clf.predict(xvars_yr1)
+
+    return exp_sup_act

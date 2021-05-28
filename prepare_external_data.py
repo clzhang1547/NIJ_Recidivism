@@ -31,7 +31,8 @@ for x in os.listdir(fp_acs):
         df = pd.read_excel(fp)
         d = pd.merge(d, df, on='group', how='left')
 # Save clean ACS data
-d.to_csv('./data/acs_group.csv', index=False)
+d = d.rename(columns={'group': 'residence_puma'})
+d.to_csv('./data/external/acs_group.csv', index=False)
 
 # GA Crime data
 crime = pd.read_excel('./from_mason/external features used/crime/crime by county linked to puma and group.xlsx')
@@ -81,7 +82,8 @@ for c in cols_crime:
     crime_group['%s_per_k' % c] = crime_group[c]/crime_group['PWGTP']*1000
 del crime_group['PWGTP']
 # Save clean crime data
-crime_group.to_csv('./data/crime_group.csv', index=False)
+crime_group = crime_group.rename(columns={'group': 'residence_puma'})
+crime_group.to_csv('./data/external/crime_group.csv', index=False)
 
 # THOR data
 thor = pd.read_csv('./from_mason/external features used/THOR/georgia_thor.csv')
@@ -128,4 +130,5 @@ thor_group = thor_group.fillna(0)
 thor_group = thor_group.reset_index()
 
 # Save clean THOR data
-thor_group.to_csv('./data/thor_group.csv', index=False)
+thor_group = thor_group.rename(columns={'group': 'residence_puma'})
+thor_group.to_csv('./data/external/thor_group.csv', index=False)

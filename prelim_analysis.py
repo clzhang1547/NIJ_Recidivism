@@ -20,7 +20,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.dummy import DummyClassifier
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, cross_validate
 import xgboost
 import lightgbm as lgb
 from sklearn.neural_network import MLPClassifier
@@ -91,7 +91,8 @@ cols_sup_act = ['drugtests_other_positive', 'drugtests_meth_positive', 'avg_days
 # for d (one hot encoding version)
 cols_X = [x for x in d.columns if x not in ['id']+ cols_ys]
 cols_X1 = [x for x in d.columns if (x not in ['id'] + cols_ys) and
-           (x.split('_')[:-1] not in cols_sup_act)] # remove sup act cols for year 1 features
+           (x.replace('_' + x.split('_')[-1], '') not in cols_sup_act) and
+           (x not in cols_sup_act)] # remove sup act cols for year 1 features
 # for dc (cat col version), convert cat cols to integers so readable by lgb
 # exceptions: puma (keep orig codes)
 # TODO: keep a mapping between cats and codes
@@ -145,10 +146,10 @@ Year 2: {'roc_auc': 0.57, 'f1': 0.3274, 'precision': 0.371, 'recall': 0.3256, 'a
 Year 3: {'roc_auc': 0.5444, 'f1': 0.2363, 'precision': 0.249, 'recall': 0.2356, 'accuracy': 0.7268, 'neg_brier_score': -0.2446}
 '''
 # Model choice
-clf = DummyClassifier(strategy='stratified') # or 'major_class"
-#clf = LogisticRegression(max_iter=1000)
+# clf = DummyClassifier(strategy='stratified') # or 'major_class"
+clf = LogisticRegression(max_iter=1000)
 #clf = RandomForestClassifier()
-#clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
 #clf = lgb.LGBMClassifier()
 #clf = MLPClassifier(hidden_layer_sizes=(50, 20), max_iter=1000, activation='relu')
 
@@ -177,6 +178,11 @@ for s in scores:
     dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s, fit_params=fit_params).mean(), 4)
     print('CV score completed -- %s' % s)
 print(dct_score)
+
+dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
+print('Average Score:', {k: round(v.mean(), 6) for k, v in dct_score.items()})
+
+# Xp = X.copy()
 
 # Model - Year 2, subset to those with no recidivism in Year 1
 col_y = 'recidivism_arrest_year2'

@@ -18,10 +18,29 @@
 # TODO: [done] use phenotype + orig xvars - not improving (barely WORSE than using only orig xvars)
 #
 #
-#  TODO: add in ACS/GA crime xvars (re Mason/Sandeep)
-# 1. Crime data - collapse by puma_group, get n_type, group_pop, n_type per capita
-# 2. THOR data - get count by county, map to puma_group, get count by puma_group
-# 3. ACS data - merge in xvar in each table by puma_group
+# TODO: [done - ACS/Crime hurt big, THOR hurt small] add in ACS/GA crime xvars (re Mason/Sandeep) - ACS/Crime/Thor data
+# With all external data:
+# Baseline ML, no phenotypes
+# Logit L2: Average Score: {'fit_time': 0.123805, 'score_time': 0.008595, 'test_roc_auc': 0.508596, 'test_f1': 0.0, 'test_precision': 0.0, 'test_recall': 0.0, 'test_accuracy': 0.701742, 'test_neg_brier_score': -0.209313}
+# XGBoost: Average Score: {'fit_time': 2.216583, 'score_time': 0.037601, 'test_roc_auc': 0.652953, 'test_f1': 0.355211, 'test_precision': 0.462571, 'test_recall': 0.290117, 'test_accuracy': 0.686987, 'test_neg_brier_score': -0.210082}
+#
+# Year 1/Never onto all persons
+# With phenotypes:
+# Logit L2, phenotypes only: no 1s predicted, Best Brier Score = -0.2093, with 5 phenotypes
+# Logit L2, d_orig + phenotypes: no 1s predicted, Best Brier Score = -0.2093, with 55 phenotypes
+# External data - ACS only
+# Logit L2: No 1s predicted. Best Brier Score = -0.20931614687647643, with 40 phenotypes
+# External data - crime only
+# Logit L2: No 1s predicted. Best Brier Score = -0.20926719766301924, with 90 phenotypes
+# External data - THOR only
+# Logit L2: Best Brier Score = -0.18882237514038133, with 40 phenotypes
+# External data - THOR only, all persons for NN
+# Logit L2: Best Brier Score = -0.1888733712618433, with 30 phenotypes
+
+# No external, Year 1/Never onto all persons
+# No interactions: Best Brier Score = -0.18886127267511196, with 60 phenotypes
+# Race/Gender interaction only: Best Brier Score = -0.18883961103882585, with 35 phenotypes
+# All interactions: Best Brier Score = -0.1884642495629924, with 30 phenotypes
 # TODO [done]: feature engineering priority!! - interaction terms?
 # black(1), female(1), age(7), education(3), dependents(4), prison_offense(5), prison_years(4)
 # black-female(1), black-age(7), female-age(7), black-education(3), female-education(3), black-dep(4), female-dep(4)
@@ -30,9 +49,9 @@
 '''
 Best result:
 Autoencoder only, all interactions, rescaled, Year1/Never onto all persons (focus on extreme classes),
-Forecast = Logit L2
+Forecast = Logit L2:
 xvars = pre-phenotype features + phenotypes
-Best Brier Score = -0.18848653082449643, with top 15 phenotypes
+Best Brier Score = -0.1884642495629924, with 30 phenotypes
 
 Baseline:
 Vanilla ML (no autoencoding, no interactions, no rescale, all person on all person)
@@ -41,6 +60,17 @@ XGBoost: 'test_neg_brier_score': -0.206422
 
 '''
 # TODO [done]: do not normalize d by max col value - not improving
+# TODO: Conclusion 5/27/2021 for Year 1:
+# 1. External data = ACS/GA crime/THOR all hurting, will not use
+# 2. Year1/Never for NN works better than all persons
+# 3. Original features + phenotypes works (very slightly) better than either feature family alone
+# 4. Rescaling does not matter
+# 5. Interaction
+# 6. Logit L2 forecasting gives best ROC/Brier, than XGBoost, RF, L1, ...
+# 7. DA white noise / random 0 all hurting (don't know what the noise is, or training data just not good enough)
+# TODO: 8. Supervision Activity cols does improve results - consider imputing them for Year 1 (see aux unf func)
+
+
 # TODO: ensemble method - sklearn
 # TODO: keras NN on prediction
 # TODO: optimize wrt phat thre for 0/1 to improve performance, check FP/FN along distribution of phat
@@ -78,6 +108,13 @@ import matplotlib.pyplot as plt
 # Read in data
 # d will be purely train data (no id, no yvars)
 d = read_and_clean_raw(fp='data/nij/NIJ_s_Recidivism_Challenge_Training_Dataset.csv')
+# merge in external data
+# acs = pd.read_csv('./data/external/acs_group.csv')
+# d = pd.merge(d, acs, on='residence_puma', how='left')
+# crime = pd.read_csv('./data/external/crime_group.csv')
+# d = pd.merge(d, crime, on='residence_puma', how='left')
+# thor = pd.read_csv('./data/external/thor_group.csv')
+# d = pd.merge(d, thor, on='residence_puma', how='left')
 # get index - restrict d to Year 1 recidivism or Never
 idxs_year1_never = d[(d['recidivism_arrest_year1']==1) | (d['recidivism_within_3years']==0)].index
 # get yvar, set d as features only
@@ -114,16 +151,22 @@ d[bool_cols] = d[bool_cols].astype(int)
 print(two_class_cols) # manually encode two class cols
 d['female'] = np.where(d['gender']=='F', 1, 0)
 d['black'] = np.where(d['race']=='BLACK', 1, 0)
-# cols not to be encoded
+# cols not to be encoded from NIJ data
 cols_no_enc = ['id', 'supervision_risk_score_first',
                'avg_days_per_drugtest', 'drugtests_thc_positive', 'drugtests_cocaine_positive',
                'drugtests_meth_positive', 'drugtests_other_positive', 'percent_days_employed', 'jobs_per_year',]
+# all external cols are not to be encoded
+cols_external = []
+# cols_external = list(acs.columns)
+# cols_external += list(crime.columns)
+# cols_external += list(thor.columns)
+cols_external = [x for x in cols_external if x!='residence_puma']
 # supervision activity cols, to be excl. from year 1 model
 if yvar == 'recidivism_arrest_year1':
     d = d.drop(columns=cols_sup_act)
 # define categorical (3+ cats) cols
 cat_cols = set(d.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) \
-           - set(cols_no_enc) - set(['female', 'black', 'id'])
+           - set(cols_no_enc) - set(['female', 'black', 'id']) - set(cols_external)
 
 # add dummies to d
 dummies = pd.get_dummies(d[cat_cols], drop_first=False)
@@ -133,32 +176,32 @@ del d['id']
 
 # add interaction terms
 # black-female(1),
-# d['black_female'] = d['black'] * d['female']
-# # black-age(7), female-age(7),
-# cols_age = get_dummy_cols('age_at_release')
-# for c in cols_age:
-#     d['black_%s' % c] = d['black'] * d[c]
-#     d['female_%s' % c] = d['female'] * d[c]
-# # black-education(3), female-education(3),
-# cols_educ = get_dummy_cols('education_level')
-# for c in cols_educ:
-#     d['black_%s' % c] = d['black'] * d[c]
-#     d['female_%s' % c] = d['female'] * d[c]
-# # black-dep(4), female-dep(4)
-# cols_dep = get_dummy_cols('dependents')
-# for c in cols_dep:
-#     d['black_%s' % c] = d['black'] * d[c]
-#     d['female_%s' % c] = d['female'] * d[c]
-# # black-offense(5), female-offense(5),
-# cols_offense = get_dummy_cols('prison_offense')
-# for c in cols_offense:
-#     d['black_%s' % c] = d['black'] * d[c]
-#     d['female_%s' % c] = d['female'] * d[c]
-# # black-years(4), female-years(4)
-# cols_years = get_dummy_cols('prison_years')
-# for c in cols_years:
-#     d['black_%s' % c] = d['black'] * d[c]
-#     d['female_%s' % c] = d['female'] * d[c]
+d['black_female'] = d['black'] * d['female']
+# black-age(7), female-age(7),
+cols_age = get_dummy_cols('age_at_release')
+for c in cols_age:
+    d['black_%s' % c] = d['black'] * d[c]
+    d['female_%s' % c] = d['female'] * d[c]
+# black-education(3), female-education(3),
+cols_educ = get_dummy_cols('education_level')
+for c in cols_educ:
+    d['black_%s' % c] = d['black'] * d[c]
+    d['female_%s' % c] = d['female'] * d[c]
+# black-dep(4), female-dep(4)
+cols_dep = get_dummy_cols('dependents')
+for c in cols_dep:
+    d['black_%s' % c] = d['black'] * d[c]
+    d['female_%s' % c] = d['female'] * d[c]
+# black-offense(5), female-offense(5),
+cols_offense = get_dummy_cols('prison_offense')
+for c in cols_offense:
+    d['black_%s' % c] = d['black'] * d[c]
+    d['female_%s' % c] = d['female'] * d[c]
+# black-years(4), female-years(4)
+cols_years = get_dummy_cols('prison_years')
+for c in cols_years:
+    d['black_%s' % c] = d['black'] * d[c]
+    d['female_%s' % c] = d['female'] * d[c]
 
 # add constant xvars to ensure # vars = 4x for 2 Maxpooling1D with size=2
 d_width_for_4x_pooling = d.shape[1]
@@ -212,15 +255,15 @@ autoencoder_train = autoencoder.fit(train_X, train_ground, batch_size=batch_size
                                     verbose=1,validation_data=(valid_X, valid_ground))
 
 # Training vs Validation Loss Plot
-loss = autoencoder_train.history['loss']
-val_loss = autoencoder_train.history['val_loss']
-epochs = range(epochs)
-plt.figure()
-plt.plot(epochs, loss, 'bo', label='Training loss')
-plt.plot(epochs, val_loss, 'b', label='Validation loss')
-plt.title('Training and validation loss')
-plt.legend()
-plt.show()
+# loss = autoencoder_train.history['loss']
+# val_loss = autoencoder_train.history['val_loss']
+# epochs = range(epochs)
+# plt.figure()
+# plt.plot(epochs, loss, 'bo', label='Training loss')
+# plt.plot(epochs, val_loss, 'b', label='Validation loss')
+# plt.title('Training and validation loss')
+# plt.legend()
+# plt.show()
 
 # Get intermediate layer (phenotype) from trained model
 # get first UpSampling1D layer
@@ -260,7 +303,8 @@ for n_phenotype in range(5, len(importance), 5):
     # clf_forecast = RandomForestClassifier()
     scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
     # Model - Year 1
-    y = train_labels # filter option: idxs_year1_never
+    # - define original data (without ones filled in for NN) for baseline ML
+    # - use d_all_persons_no_rescale ro d_all_persons, similar results
     d_orig = d_all_persons[:,:,0]
     if n_ones_filled>0:
         d_orig = d_all_persons[:,:-1*n_ones_filled,0]
@@ -269,6 +313,7 @@ for n_phenotype in range(5, len(importance), 5):
     # X = d_orig
     # X = d_all_persons[:,:,0]
     # X = d[:,:,0]
+    y = train_labels # filter option: idxs_year1_never
     dct_score = cross_validate(clf_forecast, X, y, cv=5, scoring=scores)
     # print(dct_score)
     print('Average Score:', {k:round(v.mean(), 6) for k, v in dct_score.items()})
@@ -280,7 +325,7 @@ print('>>Best Brier Score = %s, with %s phenotypes' % (best_brier, opt_n_phenoty
 
 # baseline - vanilla ML
 clf_forecast = LogisticRegression(penalty='l2', max_iter=1000, solver='lbfgs')  # l1 penalty use liblinear
-clf_forecast = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+# clf_forecast = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
 X = d_all_persons_no_rescale[:,:,0]
 if n_ones_filled>1:
     X = d_all_persons_no_rescale[:, :-1*n_ones_filled, 0]
