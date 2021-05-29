@@ -65,7 +65,7 @@ XGBoost: 'test_neg_brier_score': -0.206422
 # 2. Year1/Never for NN works better than all persons
 # 3. Original features + phenotypes works (very slightly) better than either feature family alone
 # 4. Rescaling does not matter
-# 5. Interaction
+# 5. Interactions - add all improves (very slightly)
 # 6. Logit L2 forecasting gives best ROC/Brier, than XGBoost, RF, L1, ...
 # 7. DA white noise / random 0 all hurting (don't know what the noise is, or training data just not good enough)
 # TODO: 8. Supervision Activity cols does improve results - consider imputing them for Year 1 (see aux unf func)

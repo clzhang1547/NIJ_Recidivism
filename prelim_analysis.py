@@ -20,31 +20,29 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.dummy import DummyClassifier
+from sklearn.decomposition import PCA
 from sklearn.model_selection import cross_val_score, cross_validate
 import xgboost
 import lightgbm as lgb
 from sklearn.neural_network import MLPClassifier
 import random
 from time import time
-
 from aux_functions import *
 
-d = pd.read_csv('./data/nij/NIJ_s_Recidivism_Challenge_Training_Dataset.csv')
-dt = pd.read_csv('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset1.csv')
+# Read in data
+d = read_and_clean_raw('./data/nij/NIJ_s_Recidivism_Challenge_Training_Dataset.csv')
+dt = read_and_clean_raw('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset1.csv')
 
-# Rename varnames, set all varname to lower
-dct_rename = {
-    '_v1':'Prior_Arrest_Episodes_PPViolationCharges',
-    '_v2': 'Prior_Conviction_Episodes_PPViolationCharges',
-    '_v3': 'Prior_Conviction_Episodes_DomesticViolenceCharges',
-    '_v4': 'Prior_Conviction_Episodes_GunCharges',
-}
-d = d.rename(columns=dct_rename)
-dt = dt.rename(columns=dct_rename)
-d.columns = [x.lower() for x in d.columns]
-dt.columns = [x.lower() for x in dt.columns]
-cols_d = set(d.columns)
-cols_dt = set(dt.columns)
+# Recode all ordinal features with numerical-like values
+cols_ordinal = ['age_at_release']
+cols_ordinal += ['dependents', 'prison_years',
+                 'prior_arrest_episodes_felony', 'prior_arrest_episodes_misd', 'prior_arrest_episodes_violent',
+                 'prior_arrest_episodes_property', 'prior_arrest_episodes_drug',
+                 'prior_arrest_episodes_ppviolationcharges', 'prior_conviction_episodes_felony',
+                 'prior_conviction_episodes_misd', 'prior_conviction_episodes_prop', 'prior_conviction_episodes_drug']
+cols_ordinal += ['delinquency_reports', 'program_attendances', 'program_unexcusedabsences', 'residence_changes']
+for c in cols_ordinal:
+    d[c] = get_ordinal_feature_col(d[c])
 
 # Fill in NAs
 print(d.isna().sum())
@@ -59,16 +57,20 @@ d['residence_puma'] = pd.Series(d['residence_puma'], dtype='str')
 # One Hot Encoding
 # find boolean columns - set False, True = 0, 1 for bool cols
 bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
-d[bool_cols] = d[bool_cols].astype(int)
+for c in bool_cols:
+    d[c] = [int(x) if not np.isnan(x) else np.nan for x in d[c]]
 print(two_class_cols) # manually encode two class cols
 d['female'] = np.where(d['gender']=='F', 1, 0)
 d['black'] = np.where(d['race']=='BLACK', 1, 0)
+# update binary_cols with female, black so excl. from cat_cols
+bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
 # cols not to be encoded
 cols_no_enc = ['id', 'supervision_risk_score_first',
                'avg_days_per_drugtest', 'drugtests_thc_positive', 'drugtests_cocaine_positive',
                'drugtests_meth_positive', 'drugtests_other_positive', 'percent_days_employed', 'jobs_per_year',]
+cols_no_enc += cols_ordinal
 # define categorica (3+ cats) cols
-cat_cols = cols_d - set(bool_cols) - set(binary_cols) - set(two_class_cols) - set(cols_no_enc)
+cat_cols = set(d.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) - set(cols_no_enc)
 # set aside a df with original cat cols (for XGBoost)
 dc = d.copy()
 dc = dc.drop(columns=two_class_cols)
@@ -93,6 +95,11 @@ cols_X = [x for x in d.columns if x not in ['id']+ cols_ys]
 cols_X1 = [x for x in d.columns if (x not in ['id'] + cols_ys) and
            (x.replace('_' + x.split('_')[-1], '') not in cols_sup_act) and
            (x not in cols_sup_act)] # remove sup act cols for year 1 features
+# get expected supervison activity cols (for Year 1 model)
+# then update cols_X1 with exp_sup_act cols
+exp_sup_act = get_expected_sup_act_cols(d[cols_X1], d[cols_sup_act])
+d = d.join(exp_sup_act)
+cols_X1 += list(exp_sup_act.columns)
 # for dc (cat col version), convert cat cols to integers so readable by lgb
 # exceptions: puma (keep orig codes)
 # TODO: keep a mapping between cats and codes
@@ -147,9 +154,9 @@ Year 3: {'roc_auc': 0.5444, 'f1': 0.2363, 'precision': 0.249, 'recall': 0.2356, 
 '''
 # Model choice
 # clf = DummyClassifier(strategy='stratified') # or 'major_class"
-clf = LogisticRegression(max_iter=1000)
+clf = LogisticRegression(max_iter=5000)
 #clf = RandomForestClassifier()
-clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+# clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
 #clf = lgb.LGBMClassifier()
 #clf = MLPClassifier(hidden_layer_sizes=(50, 20), max_iter=1000, activation='relu')
 
@@ -182,7 +189,22 @@ print(dct_score)
 dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
 print('Average Score:', {k: round(v.mean(), 6) for k, v in dct_score.items()})
 
-# Xp = X.copy()
+# PCA - Year 1
+X_pca = np.array(X)[:,:-16]
+n_comps = list(range(5, X_pca.shape[1]+5, 5))
+best_brier = -999
+opt_n = -999
+for n_comp in n_comps:
+    n_comp = min(n_comp, X_pca.shape[1])
+    print('************\nPCA: n_components = %s' % n_comp)
+    X_reduced = PCA(n_components=n_comp).fit_transform(X)
+    dct_score = cross_validate(clf, X_reduced, y, cv=5, scoring=scores)
+    print('Average Score:', {k: round(v.mean(), 6) for k, v in dct_score.items()})
+    brier = dct_score['test_neg_brier_score'].mean()
+    if brier > best_brier:
+        best_brier=brier
+        opt_n = n_comp
+print('>>Best Brier Score = %s, with %s components' % (best_brier, opt_n))
 
 # Model - Year 2, subset to those with no recidivism in Year 1
 col_y = 'recidivism_arrest_year2'

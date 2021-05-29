@@ -51,6 +51,8 @@ for prior_crime_col in prior_crime_cols:
     yvar = 'recidivism_arrest_year1'
     train_labels = d[yvar].astype(int)
     d = d[[x for x in d.columns if x not in cols_ys]]
+    # get large metro (Atlanta) status
+    d['atlanta'] = np.where(d['residence_puma'].isin([1, 2, 6, 9, 10, 11, 12, 13, 14, 15, 17, 17, 21, 22, 23]), 1, 0)
     # get supervision activity cols
     cols_sup_act = get_sup_act_cols()
 
@@ -76,11 +78,12 @@ for prior_crime_col in prior_crime_cols:
     # d = d[d['age_at_release'].isin(['23-27', '28-32', '33-37'])]
     # d = d[d['gang_affiliated']==1]
     # d = d[~d['prior_arrest_episodes_ppviolationcharges'].isin(['0'])]
+    # d = d[d['atlanta']==0]
 
     # subgroup option 2  - K means clustering (for Prior GA Criminal History xvars)
     xvar_subgroup = prior_crime_col
     d['km_%s' % xvar_subgroup] = get_km_subgroups(d[xvar_subgroup])
-    cluster_used = 1
+    cluster_used = 0
     d = d[d['km_%s' % xvar_subgroup]==cluster_used]
 
     # Set groupd id for naming output json file

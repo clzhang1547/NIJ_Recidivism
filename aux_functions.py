@@ -10,7 +10,10 @@ import numpy as np
 from sklearn.cluster import KMeans
 from keras.layers import Input,Conv1D,MaxPooling1D,UpSampling1D
 from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, brier_score_loss, \
+    r2_score, mean_squared_error
 import math
+from string import digits
 import mord
 
 # a function to define supervision activity columns
@@ -225,4 +228,36 @@ def get_expected_sup_act_cols(xvars_yr1, sup_act):
             clf = mord.LogisticAT().fit(xvars_yr1, sup_act[c])
             exp_sup_act['_exp_%s' % c] = clf.predict(xvars_yr1)
 
+        # evaluate pred vs truth
+        scores = {}
+        if clf.__class__.__name__=='LogisticRegression':
+            scores['accuracy'] = accuracy_score(sup_act[c], exp_sup_act['_exp_%s' % c])
+            scores['precision'] = precision_score(sup_act[c], exp_sup_act['_exp_%s' % c])
+            scores['recall'] = recall_score(sup_act[c], exp_sup_act['_exp_%s' % c])
+            scores['f1'] = f1_score(sup_act[c], exp_sup_act['_exp_%s' % c])
+        elif clf.__class__.__name__ == 'LinearRegression':
+            scores['r2'] = r2_score(sup_act[c], exp_sup_act['_exp_%s' % c])
+            scores['neg_mean_squared_error'] = mean_squared_error(sup_act[c], exp_sup_act['_exp_%s' % c])
+        elif clf.__class__.__name__ == 'LogisticAT':
+            scores['accuracy'] = accuracy_score(sup_act[c], exp_sup_act['_exp_%s' % c])
+
+        print('Supervision Activity col = %s' % c)
+        print('Imputation scores = %s\n' % scores)
+
+
     return exp_sup_act
+
+# a function to convert ordinal features
+def get_ordinal_feature_col(d_col):
+    # d_col a pd Series col
+    # col string labels must be ordered ordinally - e.g. '0', '1', '2', '3 or more'
+    # after removing ' or more' string, must be purely numerical values ready for ordering
+
+    # Remove the non-numerical characters from string values of feature
+    # e.g. 'More than 3 years'>>'3', '10 or more'>>'10'
+    col = d_col.name
+    d_col = [''.join(z for z in x if z in digits) if isinstance(x, str) else x for x in d_col]
+    d_col = pd.Series(d_col, name=col)
+    col_labels = d_col.value_counts().sort_index().index
+    d_col = d_col.replace(dict(zip(col_labels, range(len(col_labels)))))
+    return d_col
