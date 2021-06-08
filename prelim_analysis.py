@@ -9,8 +9,8 @@
 # https://towardsdatascience.com/optimal-threshold-for-imbalanced-classification-5884e870c293
 # TODO [done]: baseline: random, one class, L2 logit
 # TODO [done]: neural network
-# TODO: add in geo chars, police dispatching
-
+# TODO [done]: add in geo chars
+# TODO [done - not improving]: add path xvars with dict for relevant risky prior crimes (either arrest 3+, conv 1+)
 
 import pandas as pd
 pd.set_option('max_colwidth', 100)
@@ -31,85 +31,71 @@ from aux_functions import *
 
 # Read in data
 d = read_and_clean_raw('./data/nij/NIJ_s_Recidivism_Challenge_Training_Dataset.csv')
-dt = read_and_clean_raw('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset1.csv')
 
 # Recode all ordinal features with numerical-like values
-cols_ordinal = ['age_at_release']
-cols_ordinal += ['dependents', 'prison_years',
-                 'prior_arrest_episodes_felony', 'prior_arrest_episodes_misd', 'prior_arrest_episodes_violent',
-                 'prior_arrest_episodes_property', 'prior_arrest_episodes_drug',
-                 'prior_arrest_episodes_ppviolationcharges', 'prior_conviction_episodes_felony',
-                 'prior_conviction_episodes_misd', 'prior_conviction_episodes_prop', 'prior_conviction_episodes_drug']
-cols_ordinal += ['delinquency_reports', 'program_attendances', 'program_unexcusedabsences', 'residence_changes']
+cols_ordinal = get_ordinal_cols()
 for c in cols_ordinal:
-    d[c] = get_ordinal_feature_col(d[c])
+    d[c] = convert_ordinal_to_numeric(d[c])
 
 # Fill in NAs
-print(d.isna().sum())
-na_count = d.isna().sum()
-na_cols = na_count[na_count>0].index
-for c in na_cols:
-    d[c] = fill_na(d[c])
-# check dtype, set puma to str
-#print(d.dtypes)
-d['residence_puma'] = pd.Series(d['residence_puma'], dtype='str')
+d = get_df_na_filled(d)
+
+# Convert two-class cols to numeric
+# the resulting df is good for cat-col based method such as LGBM (no need to One Hot Encode)
+d = convert_two_class_cols_to_numeric(d)
+dc = d.copy() # a 'cat-col' version of d before One Hot Encoding (for LGBM use only)
+
+# Get categorical cols (for LGBM use only)
+bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(dc)
+cols_no_enc = get_cols_no_encode()
+cols_ordinal = get_ordinal_cols()
+cat_cols = set(dc.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) \
+           - set(cols_no_enc) - set(cols_ordinal)
 
 # One Hot Encoding
-# find boolean columns - set False, True = 0, 1 for bool cols
-bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
-for c in bool_cols:
-    d[c] = [int(x) if not np.isnan(x) else np.nan for x in d[c]]
-print(two_class_cols) # manually encode two class cols
-d['female'] = np.where(d['gender']=='F', 1, 0)
-d['black'] = np.where(d['race']=='BLACK', 1, 0)
-# update binary_cols with female, black so excl. from cat_cols
-bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
-# cols not to be encoded
-cols_no_enc = ['id', 'supervision_risk_score_first',
-               'avg_days_per_drugtest', 'drugtests_thc_positive', 'drugtests_cocaine_positive',
-               'drugtests_meth_positive', 'drugtests_other_positive', 'percent_days_employed', 'jobs_per_year',]
-cols_no_enc += cols_ordinal
-# define categorica (3+ cats) cols
-cat_cols = set(d.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) - set(cols_no_enc)
-# set aside a df with original cat cols (for XGBoost)
-dc = d.copy()
-dc = dc.drop(columns=two_class_cols)
-# for master d, do one hot encoding for cat cols (for sk-learn models)
-# one hot encoding
-# Note 1: set drop_first=False for purely linear logit (statsmodel)
-# Note 2: cols with diff dtype will not be encoded, so puma must be converted to str first
-dummies = pd.get_dummies(d[cat_cols], drop_first=False)
-d = d.join(dummies)
-d = d.drop(columns=list(cat_cols) + two_class_cols)
+d = one_hot_encoding(d)
+
+# Make cols for recidivism path
+dct_reci_path = get_dict_risky_prior_crime_types()
+for k, v in dct_reci_path.items():
+    # k = current prison_offense
+    # v = list of relevant prior crime types
+    d['path_%s' % k] = 0
+    for p in v: # p = prior crime type
+        d['path_%s' % k] = np.where((d['prison_offense_%s' % k]==1) &
+                                    (d['prior_arrest_episodes_%s' % p]>2), 1, d['path_%s' % k])
+# Check prevalence of path forming by current prison_offense
+for k, v in dct_reci_path.items():
+    print(pd.crosstab(d['prison_offense_%s' % k], d['path_%s' % k]))
+    print('-'*50)
 
 # Define cols for model training's X, y
 cols_ys = ['recidivism_within_3years', 'recidivism_arrest_year1', 'recidivism_arrest_year2', 'recidivism_arrest_year3']
 # supervision activity cols, to be excl. from year 1 model
-cols_sup_act = ['drugtests_other_positive', 'drugtests_meth_positive', 'avg_days_per_drugtest',
-                'violations_failtoreport', 'jobs_per_year', 'program_unexcusedabsences', 'residence_changes',
-                'program_attendances', 'drugtests_thc_positive', 'delinquency_reports',
-                'drugtests_cocaine_positive', 'violations_instruction', 'violations_movewithoutpermission',
-                'percent_days_employed', 'employment_exempt', 'violations_electronicmonitoring']
+cols_sup_act = get_sup_act_cols()
 # for d (one hot encoding version)
 cols_X = [x for x in d.columns if x not in ['id']+ cols_ys]
 cols_X1 = [x for x in d.columns if (x not in ['id'] + cols_ys) and
            (x.replace('_' + x.split('_')[-1], '') not in cols_sup_act) and
            (x not in cols_sup_act)] # remove sup act cols for year 1 features
-# get expected supervison activity cols (for Year 1 model)
+'''
+# get expected supervision activity cols (for Year 1 model)
 # then update cols_X1 with exp_sup_act cols
 exp_sup_act = get_expected_sup_act_cols(d[cols_X1], d[cols_sup_act])
 d = d.join(exp_sup_act)
 cols_X1 += list(exp_sup_act.columns)
+'''
+
 # for dc (cat col version), convert cat cols to integers so readable by lgb
 # exceptions: puma (keep orig codes)
 # TODO: keep a mapping between cats and codes
+
 for c in [x for x in cat_cols if x not in ['residence_puma']]:
     dc[c] = pd.Categorical(dc[c]).codes
 cols_Xc = [x for x in dc.columns if x not in ['id']+ cols_ys]
 cols_X1c = [x for x in dc.columns if x not in ['id'] + cols_ys + cols_sup_act] # remove sup act cols for year 1 features
 # cat_cols include the 16 supervision cols, remove for Year 1
 cat_cols_1 = [x for x in cat_cols if x not in cols_sup_act]
-# Tree methods
 '''
 CV 5 results
 Dummy (Major Class)

@@ -16,6 +16,135 @@ import math
 from string import digits
 import mord
 
+# a function to read and clean up raw data
+def read_and_clean_raw(fp):
+    df = pd.read_csv(fp)
+    # Rename varnames, set all varname to lower
+    dct_rename = {
+        '_v1': 'Prior_Arrest_Episodes_PPViolationCharges',
+        '_v2': 'Prior_Conviction_Episodes_PPViolationCharges',
+        '_v3': 'Prior_Conviction_Episodes_DVCharges',
+        '_v4': 'Prior_Conviction_Episodes_GunCharges',
+        'Prior_Arrest_Episodes_Violent': 'Prior_Arrest_Episodes_Viol',
+        'Prior_Arrest_Episodes_Property': 'Prior_Arrest_Episodes_Prop'  # same with prior_conviction short name
+    }
+    df = df.rename(columns=dct_rename)
+    df.columns = [x.lower() for x in df.columns]
+    # check dtype, set puma to str
+    #print(d.dtypes)
+    df['residence_puma'] = pd.Series(df['residence_puma'], dtype='str')
+    return df
+
+# a function to get ordinal columns
+def get_ordinal_cols():
+    cols_ordinal = ['age_at_release']
+    cols_ordinal += ['dependents', 'prison_years',
+                     'prior_arrest_episodes_felony', 'prior_arrest_episodes_misd', 'prior_arrest_episodes_viol',
+                     'prior_arrest_episodes_prop', 'prior_arrest_episodes_drug',
+                     'prior_arrest_episodes_ppviolationcharges', 'prior_conviction_episodes_felony',
+                     'prior_conviction_episodes_misd', 'prior_conviction_episodes_prop',
+                     'prior_conviction_episodes_drug']
+    cols_ordinal += ['delinquency_reports', 'program_attendances', 'program_unexcusedabsences', 'residence_changes']
+    return cols_ordinal
+
+# a function to convert ordinal features to numeric values
+def convert_ordinal_to_numeric(d_col):
+    # d_col a pd Series col
+    # col string labels must be ordered ordinally - e.g. '0', '1', '2', '3 or more'
+    # after removing ' or more' string, must be purely numerical values ready for ordering
+
+    # Remove the non-numerical characters from string values of feature
+    # e.g. 'More than 3 years'>>'3', '10 or more'>>'10'
+    col = d_col.name
+    d_col = [''.join(z for z in x if z in digits) if isinstance(x, str) else x for x in d_col]
+    d_col = pd.Series(d_col, name=col)
+    col_labels = d_col.value_counts().sort_index().index
+    d_col = d_col.replace(dict(zip(col_labels, range(len(col_labels)))))
+    return d_col
+
+# a function to fill in NAs for a column, default fill-in value is random draw from valid values in column
+def fill_na(col, value='random'):
+    # col: a df column, pdSeries
+    if True not in col.isna().value_counts().index: # no NA
+        pass
+    else:
+        # at least 1 NA
+        # fill with random value
+        if value == 'random':
+            col = [random.choice(col.dropna().values) if pd.isnull(x) else x for x in col]
+        elif value == 'median':
+            col = pd.DataFrame(col).fillna(value=col.median())
+    return col
+
+# a function to fill NAs for a df
+def get_df_na_filled(d):
+    # d: input df
+    # Fill in NAs
+    print(d.isna().sum())
+    na_count = d.isna().sum()
+    na_cols = na_count[na_count>0].index
+    for c in na_cols:
+        d[c] = fill_na(d[c])
+
+    return d
+# a function to get boolean columns
+def get_bool_binary_cols(df):
+    bool_cols = [c for c in df.columns
+                 if df[c].dropna().value_counts().index.isin([True, False]).all()]
+    binary_cols = [c for c in df.columns
+                 if df[c].dropna().value_counts().index.isin([0, 1]).all()]
+    # two class cols contain two values other than True/False and 0/1, e.g. gender=male, female
+    two_class_cols = [c for c in df.columns
+                 if len(df[c].dropna().value_counts().index)==2]
+    two_class_cols = list(set(two_class_cols) - set(bool_cols) - set(binary_cols))
+    return (bool_cols, binary_cols, two_class_cols)
+
+# a function to convert two class to numeric
+def convert_two_class_cols_to_numeric(d):
+    # d: input df
+    # e.g. bool_cols: True/False, binary_cols: 0/1, two_class_cols: 'male'/'female'
+    # find boolean columns, then set False, True = 0, 1 for bool cols
+    bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
+    for c in bool_cols:
+        d[c] = [int(x) if not np.isnan(x) else np.nan for x in d[c]]
+    print(two_class_cols) # manually encode two class cols
+    d['female'] = np.where(d['gender']=='F', 1, 0)
+    d['black'] = np.where(d['race']=='BLACK', 1, 0)
+    d = d.drop(columns=two_class_cols)
+    return d
+
+# a function to get cols not to be one hot encoded
+def get_cols_no_encode():
+    # cols not to be encoded
+    # incl. ID and raw numeric cols
+    cols_no_enc = ['id', 'supervision_risk_score_first',
+                   'avg_days_per_drugtest', 'drugtests_thc_positive', 'drugtests_cocaine_positive',
+                   'drugtests_meth_positive', 'drugtests_other_positive', 'percent_days_employed', 'jobs_per_year',]
+    return cols_no_enc
+
+
+# a function to perform One Hot Encoding
+def one_hot_encoding(d):
+    # d: input df
+    # - Note: d must have all two-class cols converted to numeric
+    # One Hot Encoding
+    # get binary_cols with female, black so excl. from cat_cols
+    bool_cols, binary_cols, two_class_cols = get_bool_binary_cols(d)
+    # cols not to be encoded
+    # incl. ID and raw numeric cols
+    cols_no_enc = get_cols_no_encode()
+    cols_ordinal = get_ordinal_cols()
+    # define categorical (3+ cats) cols
+    cat_cols = set(d.columns) - set(bool_cols) - set(binary_cols) - set(two_class_cols) \
+               - set(cols_no_enc) - set(cols_ordinal)
+    # one hot encoding
+    # Note 1: set drop_first=True for purely linear logit (statsmodel), set to False for ML/tree methods
+    # Note 2: cols with diff dtype will not be encoded, so puma must be converted to str first
+    dummies = pd.get_dummies(d[cat_cols], drop_first=False)
+    d = d.join(dummies)
+    d = d.drop(columns=list(cat_cols) + two_class_cols)
+    return d
+
 # a function to define supervision activity columns
 def get_sup_act_cols():
     cols_sup_act = ['drugtests_other_positive', 'drugtests_meth_positive', 'avg_days_per_drugtest',
@@ -26,13 +155,25 @@ def get_sup_act_cols():
     return cols_sup_act
 
 def get_prior_crime_cols():
-    cols_prior_crime = ['prior_arrest_episodes_felony', 'prior_arrest_episodes_misd', 'prior_arrest_episodes_violent',
-                        'prior_arrest_episodes_property', 'prior_arrest_episodes_drug', 'prior_arrest_episodes_ppviolationcharges',
+    cols_prior_crime = ['prior_arrest_episodes_felony', 'prior_arrest_episodes_misd', 'prior_arrest_episodes_viol',
+                        'prior_arrest_episodes_prop', 'prior_arrest_episodes_drug', 'prior_arrest_episodes_ppviolationcharges',
                         'prior_arrest_episodes_dvcharges', 'prior_arrest_episodes_guncharges', 'prior_conviction_episodes_felony',
                         'prior_conviction_episodes_misd', 'prior_conviction_episodes_viol', 'prior_conviction_episodes_prop',
                         'prior_conviction_episodes_drug', 'prior_conviction_episodes_ppviolationcharges',
-                        'prior_conviction_episodes_domesticviolencecharges', 'prior_conviction_episodes_guncharges']
+                        'prior_conviction_episodes_dvcharges', 'prior_conviction_episodes_guncharges']
     return cols_prior_crime
+
+# a function to get dict from latest GA prison_offense to relevant prior GA crime type suggesting redicivism risk
+def get_dict_risky_prior_crime_types():
+    dct = {}
+    dct['Violent/Sex'] = ['felony', 'misd', 'viol', 'ppviolationcharges',
+                          'dvcharges',]
+    dct['Violent/Non-Sex'] = ['felony', 'misd', 'viol', 'ppviolationcharges',
+                          'dvcharges', 'guncharges']
+    dct['Property'] = ['prop', 'drug', 'ppviolationcharges',]
+    dct['Drug'] = ['drug', 'ppviolationcharges', 'guncharges']
+    dct['Other'] = ['ppviolationcharges']
+    return dct
 
 # a function to get cols for dummies
 def get_dummy_cols(var):
@@ -50,56 +191,21 @@ def get_dummy_cols(var):
     cols = [var + '_' + x for x in cols]
     return cols
 
-# a function to read and clean up raw data
-def read_and_clean_raw(fp):
-    df = pd.read_csv(fp)
-    # Rename varnames, set all varname to lower
-    dct_rename = {
-        '_v1': 'Prior_Arrest_Episodes_PPViolationCharges',
-        '_v2': 'Prior_Conviction_Episodes_PPViolationCharges',
-        '_v3': 'Prior_Conviction_Episodes_DomesticViolenceCharges',
-        '_v4': 'Prior_Conviction_Episodes_GunCharges',
-    }
-    df = df.rename(columns=dct_rename)
-    df.columns = [x.lower() for x in df.columns]
-    return df
-# a function to fill in NAs, default fill-in value is random draw from valid values in column
-def fill_na(col, value='random'):
-    # col: a df column, pdSeries
-    if True not in col.isna().value_counts().index: # no NA
-        pass
-    else:
-        # at least 1 NA
-        # fill with random value
-        if value == 'random':
-            col = [random.choice(col.dropna().values) if pd.isnull(x) else x for x in col]
-        elif value == 'median':
-            col = pd.DataFrame(col).fillna(value=col.median())
-    return col
 
-# a function to perform One Hot Encoding
-def one_hot_encoding(X, col_names):
-    # X: a 2d array of feature values
-    # col_names: column names of all features in X
-    enc = OneHotEncoder(handle_unknown='ignore')
-    enc.fit(X)
-    out = enc.transform(X).toarray()
-    cols = enc.get_feature_names(col_names)
-    df = pd.DataFrame(out, columns=cols)
 
-    return df
+# # a function to perform One Hot Encoding
+# def one_hot_encoding(X, col_names):
+#     # X: a 2d array of feature values
+#     # col_names: column names of all features in X
+#     enc = OneHotEncoder(handle_unknown='ignore')
+#     enc.fit(X)
+#     out = enc.transform(X).toarray()
+#     cols = enc.get_feature_names(col_names)
+#     df = pd.DataFrame(out, columns=cols)
+#
+#     return df
 
-# a function to get boolean columns
-def get_bool_binary_cols(df):
-    bool_cols = [c for c in df.columns
-                 if df[c].dropna().value_counts().index.isin([True, False]).all()]
-    binary_cols = [c for c in df.columns
-                 if df[c].dropna().value_counts().index.isin([0, 1]).all()]
-    # two class cols contain two values other than True/False and 0/1, e.g. gender=male, female
-    two_class_cols = [c for c in df.columns
-                 if len(df[c].dropna().value_counts().index)==2]
-    two_class_cols = list(set(two_class_cols) - set(bool_cols) - set(binary_cols))
-    return (bool_cols, binary_cols, two_class_cols)
+
 
 # a function to randomly set 0s to 2d array
 def set_random_elements(array, prop, fill=0):
@@ -247,17 +353,3 @@ def get_expected_sup_act_cols(xvars_yr1, sup_act):
 
     return exp_sup_act
 
-# a function to convert ordinal features
-def get_ordinal_feature_col(d_col):
-    # d_col a pd Series col
-    # col string labels must be ordered ordinally - e.g. '0', '1', '2', '3 or more'
-    # after removing ' or more' string, must be purely numerical values ready for ordering
-
-    # Remove the non-numerical characters from string values of feature
-    # e.g. 'More than 3 years'>>'3', '10 or more'>>'10'
-    col = d_col.name
-    d_col = [''.join(z for z in x if z in digits) if isinstance(x, str) else x for x in d_col]
-    d_col = pd.Series(d_col, name=col)
-    col_labels = d_col.value_counts().sort_index().index
-    d_col = d_col.replace(dict(zip(col_labels, range(len(col_labels)))))
-    return d_col
