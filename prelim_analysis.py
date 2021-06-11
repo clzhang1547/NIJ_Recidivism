@@ -18,7 +18,9 @@ pd.set_option('display.max_columns', 999)
 pd.set_option('display.width', 200)
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.decomposition import PCA
 from sklearn.model_selection import cross_val_score, cross_validate
@@ -193,16 +195,38 @@ for n_comp in n_comps:
 print('>>Best Brier Score = %s, with %s components' % (best_brier, opt_n))
 
 # Model - Year 2, subset to those with no recidivism in Year 1
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+from sklearn import preprocessing
+#clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy',] #  'neg_brier_score'
+clf = RidgeClassifier()
+#clf = SVC()
+#clf = LogisticRegression(max_iter=5000)
+clf = KNeighborsClassifier(n_neighbors=5)
 col_y = 'recidivism_arrest_year2'
 y = df[df['recidivism_arrest_year1']==0][col_y]
 X = df[df['recidivism_arrest_year1']==0][cols_X]
-dct_score = {}
-for s in scores:
-    fit_params = None
-    if type(clf).__name__=='LGBMClassifier':
-        fit_params = {'categorical_feature':cat_cols}
-    dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s, fit_params=fit_params).mean(), 4)
-print(dct_score)
+
+dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
+print('Average Score:', {k: round(v.mean(), 6) for k, v in dct_score.items()})
+
+train_X, valid_X, train_y, valid_y= train_test_split(X, y, test_size=0.2)
+scaler = preprocessing.StandardScaler().fit(train_X)
+train_X_scaled = scaler.transform(train_X)
+
+clf = clf.fit(train_X_scaled, train_y)
+scaler = preprocessing.StandardScaler().fit(valid_X)
+valid_X_scaled = scaler.transform(valid_X)
+yhat = clf.predict(valid_X_scaled)
+print(confusion_matrix(valid_y, yhat))
+# dct_score = {}
+# for s in scores:
+#     fit_params = None
+#     if type(clf).__name__=='LGBMClassifier':
+#         fit_params = {'categorical_feature':cat_cols}
+#     dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s, fit_params=fit_params).mean(), 4)
+# print(dct_score)
 
 # Model - Year 3, subset to those with no recidivism in Year 1 & 2
 col_y = 'recidivism_arrest_year3'
@@ -219,4 +243,31 @@ print(dct_score)
 # Timer ends
 t1 = time()
 print('Time elapsed for Year 123 CV results = {:.2f}'.format((t1-t0)))
+
+#######################################
+'''
+# Confusion matrix examples: rows=true, cols = pred
+Logit L2 (with stdz'd xvars)
+[[1796   78]
+ [ 591   66]]
+
+XGB:
+[[1700  192]
+ [ 473  166]]
+
+Ridge Regression (with stdz'd xvars):
+[[1846   47]
+ [ 594   44]]
+
+SVC (with stdz'd xvars):
+[[1888    8]
+ [ 625   10]]
+
+KNN5 (with stdz'd xvars):
+[[1749  157]
+ [ 542   83]]
+
+
+
+'''
 
