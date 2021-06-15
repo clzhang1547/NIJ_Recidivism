@@ -64,8 +64,11 @@ for k, v in dct_reci_path.items():
     # v = list of relevant prior crime types
     d['path_%s' % k] = 0
     for p in v: # p = prior crime type
-        d['path_%s' % k] = np.where((d['prison_offense_%s' % k]==1) &
-                                    (d['prior_arrest_episodes_%s' % p]>2), 1, d['path_%s' % k])
+        # binary path
+        # d['path_%s' % k] = np.where((d['prison_offense_%s' % k]==1) &
+        #                             (d['prior_arrest_episodes_%s' % p]>2), 1, d['path_%s' % k])
+        # alternatively, path intensity
+        d['path_%s' % k] += d['prison_offense_%s' % k] * d['prior_arrest_episodes_%s' % p]
 # Check prevalence of path forming by current prison_offense
 for k, v in dct_reci_path.items():
     print(pd.crosstab(d['prison_offense_%s' % k], d['path_%s' % k]))
@@ -141,6 +144,11 @@ Year 2: {'roc_auc': 0.57, 'f1': 0.3274, 'precision': 0.371, 'recall': 0.3256, 'a
 Year 3: {'roc_auc': 0.5444, 'f1': 0.2363, 'precision': 0.249, 'recall': 0.2356, 'accuracy': 0.7268, 'neg_brier_score': -0.2446}
 '''
 # Model choice
+from keras.layers import Input,Conv1D,MaxPooling1D,UpSampling1D
+from keras.models import Model
+
+
+
 # clf = DummyClassifier(strategy='stratified') # or 'major_class"
 clf = LogisticRegression(max_iter=5000)
 #clf = RandomForestClassifier()
@@ -164,16 +172,6 @@ t0 = time()
 col_y = 'recidivism_arrest_year1'
 y = df[col_y]
 X = df[cols_X1]
-
-dct_score = {}
-for s in scores:
-    fit_params = None
-    if type(clf).__name__=='LGBMClassifier':
-        fit_params = {'categorical_feature':cat_cols_1}
-    dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s, fit_params=fit_params).mean(), 4)
-    print('CV score completed -- %s' % s)
-print(dct_score)
-
 dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
 print('Average Score:', {k: round(v.mean(), 6) for k, v in dct_score.items()})
 
@@ -198,19 +196,65 @@ print('>>Best Brier Score = %s, with %s components' % (best_brier, opt_n))
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 from sklearn import preprocessing
+
+# Neural Network
+from keras.models import Sequential
+from keras.layers import Dense, Dropout
+from tensorflow.keras import layers
+from keras.layers.core import Lambda
+from keras import backend as K
+import matplotlib.pyplot as plt
+
+# NN - data set up
+train_X, valid_X, train_y, valid_y= train_test_split(X, y, test_size=0.2)
+scaler = preprocessing.StandardScaler().fit(train_X)
+train_X = scaler.transform(train_X)
+scaler = preprocessing.StandardScaler().fit(valid_X)
+valid_X = scaler.transform(valid_X)
+# NN - model set up
+def PermaDropout(rate):
+    return Lambda(lambda x: K.dropout(x, level=rate))
+model = Sequential()
+model.add(Dense(32, activation='relu', name='layer1'))
+model.add(Dense(64, activation='relu', name='layer2'))
+model.add(Dropout(0.2))
+# model.add(PermaDropout(0.2)),
+model.add(Dense(64, activation='tanh', name='layer3'))
+
+model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['mean_squared_error'])
+epochs = 100
+batch_size = 1000
+model.fit(train_X, train_y, epochs=epochs, batch_size=500, verbose=1, validation_data=(valid_X, valid_y))
+
+# Training vs Validation Loss Plot
+model_history = model.history.__dict__['history']
+loss = model_history['loss']
+val_loss = model_history['val_loss']
+epochs = range(epochs)
+plt.figure()
+plt.plot(epochs, loss, 'bo', label='Training loss')
+plt.plot(epochs, val_loss, 'b', label='Validation loss')
+plt.title('Training and validation loss')
+plt.legend()
+plt.show()
+
+
 #clf = xgboost.XGBClassifier(objective='binary:logistic', use_label_encoder=False) # one hot encoding
-scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy',] #  'neg_brier_score'
-clf = RidgeClassifier()
+#clf = RidgeClassifier()
 #clf = SVC()
-#clf = LogisticRegression(max_iter=5000)
-clf = KNeighborsClassifier(n_neighbors=5)
+clf = LogisticRegression(max_iter=5000)
+#clf = KNeighborsClassifier(n_neighbors=5)
 col_y = 'recidivism_arrest_year2'
 y = df[df['recidivism_arrest_year1']==0][col_y]
 X = df[df['recidivism_arrest_year1']==0][cols_X]
 
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy',] #  'neg_brier_score'
+if clf.__class__.__name__ in ['LogisticRegression', 'XGBClassifier']:
+    scores.append('neg_brier_score')
 dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
 print('Average Score:', {k: round(v.mean(), 6) for k, v in dct_score.items()})
 
+# get an example confusion matrix
 train_X, valid_X, train_y, valid_y= train_test_split(X, y, test_size=0.2)
 scaler = preprocessing.StandardScaler().fit(train_X)
 train_X_scaled = scaler.transform(train_X)
@@ -220,25 +264,14 @@ scaler = preprocessing.StandardScaler().fit(valid_X)
 valid_X_scaled = scaler.transform(valid_X)
 yhat = clf.predict(valid_X_scaled)
 print(confusion_matrix(valid_y, yhat))
-# dct_score = {}
-# for s in scores:
-#     fit_params = None
-#     if type(clf).__name__=='LGBMClassifier':
-#         fit_params = {'categorical_feature':cat_cols}
-#     dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s, fit_params=fit_params).mean(), 4)
-# print(dct_score)
+
+
 
 # Model - Year 3, subset to those with no recidivism in Year 1 & 2
 col_y = 'recidivism_arrest_year3'
 y = df[(df['recidivism_arrest_year1']==0) & (df['recidivism_arrest_year2']==0)][col_y]
 X = df[(df['recidivism_arrest_year1']==0) & (df['recidivism_arrest_year2']==0)][cols_X]
-dct_score = {}
-for s in scores:
-    fit_params = None
-    if type(clf).__name__=='LGBMClassifier':
-        fit_params = {'categorical_feature':cat_cols}
-    dct_score[s] = round(cross_val_score(clf, X, y, cv=5, scoring=s, fit_params=fit_params).mean(), 4)
-print(dct_score)
+
 
 # Timer ends
 t1 = time()
