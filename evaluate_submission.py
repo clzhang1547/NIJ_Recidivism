@@ -5,34 +5,31 @@ pd.set_option('display.width', 200)
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, brier_score_loss, roc_auc_score
 
-def get_eval_score(p_scalar):
-    #p_scalar = 1.5
-    pred = pd.read_excel('./_management/_submission/AMERICAN INSTITUTES FOR RESEARCH_1YearForecast.xlsx')
-    pred['Probability'] = [min(x*p_scalar, 1) if 0.4<x<0.5 else x for x in pred['Probability']]
-    test1 = pd.read_csv('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset1.csv')
-    test2 = pd.read_csv('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset2.csv')
-    recd_yr1 = list(set(test1.ID) - set(test2.ID))
-    recd_yr1 = pd.Series(recd_yr1, name='ID')
-    recd_yr1 = pd.DataFrame(recd_yr1)
-    recd_yr1['true'] = 1
-    pred = pd.merge(pred, recd_yr1, on='ID', how='left')
-    pred.loc[pred['true'].isna(), 'true'] = 0
+pred = pd.read_excel('./_management/_submission/Year1/AMERICAN INSTITUTES FOR RESEARCH_1YearForecast.xlsx')
+# Read in "test data"
+# diff between test1 and test2 gives recd of Year1,
+# diff between test2 and test3 gives recd of Year2,
+test2 = pd.read_csv('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset2.csv')
+test3 = pd.read_csv('./data/nij/NIJ_s_Recidivism_Challenge_Test_Dataset3.csv')
+recd = list(set(test2.ID) - set(test3.ID))
+recd = pd.Series(recd, name='ID')
+recd = pd.DataFrame(recd)
+recd['true'] = 1
+pred = pd.merge(pred, recd, on='ID', how='left')
+pred.loc[pred['true'].isna(), 'true'] = 0
 
-    pred['pred'] = np.where(pred['Probability']>=0.5, 1, 0)
+pred['pred'] = np.where(pred['Probability']>=0.5, 1, 0)
 
-    score = {}
-    score['brier'] = brier_score_loss(pred['true'], pred['Probability'])
-    score['accuracy'] = accuracy_score(pred['true'], pred['pred'])
-    score['precision'] = precision_score(pred['true'], pred['pred'])
-    score['recall'] = recall_score(pred['true'], pred['pred'])
-    score['f1'] = f1_score(pred['true'], pred['pred'])
-    score['roc'] = roc_auc_score(pred['true'], pred['Probability'])
-    print(score)
-    print('-'*150)
-    return None
-get_eval_score(1)
-get_eval_score(1.1)
-get_eval_score(0.9)
+score = {}
+score['brier'] = brier_score_loss(pred['true'], pred['Probability'])
+score['accuracy'] = accuracy_score(pred['true'], pred['pred'])
+score['precision'] = precision_score(pred['true'], pred['pred'])
+score['recall'] = recall_score(pred['true'], pred['pred'])
+score['f1'] = f1_score(pred['true'], pred['pred'])
+score['roc'] = roc_auc_score(pred['true'], pred['Probability'])
+print(score)
+print('-'*150)
+
 
 ###############
 # Plot
