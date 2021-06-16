@@ -90,7 +90,7 @@ col_y = 'recidivism_arrest_year2'
 ########################################################
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-
+from pprint import pprint
 # initialize phat_out
 phat_out = pd.DataFrame()
 
@@ -110,7 +110,14 @@ Xt = dft[cols_X]
 pipe = Pipeline([("scale", StandardScaler()),
                  ("reduce_dims", PCA(n_components=0.25)),
                  ('model', clf)])
+# quick validation
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
+dct_score = cross_validate(pipe, X, y, cv=5, scoring=scores)
+print('Average Score [Subgroup 1 CV5. Total N = %s]:' % len(Xt))
+pprint({k: round(v.mean(), 6) for k, v in dct_score.items()})
+# fit and predict
 pipe.fit(X, y)
+print('Final Subgroup 1 PCA n_components = %s' % pipe.__dict__['steps'][1][1].n_components_)
 phat = pipe.predict_proba(Xt)
 phat = pd.Series([x[1] for x in phat], name='Probability')
 id = pd.Series([int(x) for x in dft['id'].values], name='ID', dtype=int)
@@ -136,7 +143,14 @@ Xt = dft[cols_X]
 pipe = Pipeline([("scale", StandardScaler()),
                  ("reduce_dims", PCA(n_components=0.75)),
                  ('model', clf)])
+# quick validation
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
+dct_score = cross_validate(pipe, X, y, cv=5, scoring=scores)
+print('Average Score [Subgroup 2 CV5. Total N = %s]:' % len(Xt))
+pprint({k: round(v.mean(), 6) for k, v in dct_score.items()})
+# fit and predict
 pipe.fit(X, y)
+print('Final Subgroup 2 PCA n_components = %s' % pipe.__dict__['steps'][1][1].n_components_)
 phat = pipe.predict_proba(Xt)
 phat = pd.Series([x[1] for x in phat], name='Probability')
 id = pd.Series([int(x) for x in dft['id'].values], name='ID', dtype=int)
@@ -161,6 +175,12 @@ dft = dt[((dt[path_xvar[0]]>0)==subgroup_bool[0]) &
 Xt = dft[cols_X]
 # Model
 clf = RandomForestClassifier(n_estimators=400)
+# quick validation
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
+dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
+print('Average Score [Subgroup 3 CV5. Total N = %s]:' % len(Xt))
+pprint({k: round(v.mean(), 6) for k, v in dct_score.items()})
+# fit and predict
 clf.fit(X, y)
 phat = clf.predict_proba(Xt)
 phat = pd.Series([x[1] for x in phat], name='Probability')
@@ -175,5 +195,16 @@ phat_out['Probability'] = [round(x, 4) for x in phat_out['Probability']]
 phat_out.to_csv('./output/year_2_forecast/year_2_forecast.csv', index=False)
 phat_out.to_excel('./_management/_submission/Year2/AMERICAN INSTITUTES FOR RESEARCH_2YearForecast.xlsx', index=False)
 
+###########################
+
+df = d.copy()
+y = df[df['recidivism_arrest_year1'] == 0][col_y]
+X = df[df['recidivism_arrest_year1'] == 0][cols_X]
+# quick validation
+clf = LogisticRegression(max_iter=5000)
+scores = ['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'neg_brier_score']
+dct_score = cross_validate(clf, X, y, cv=5, scoring=scores)
+print('Average Score [Subgroup 3 CV5. Total N = %s]:' % len(Xt))
+pprint({k: round(v.mean(), 6) for k, v in dct_score.items()})
 
 
